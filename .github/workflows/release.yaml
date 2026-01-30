@@ -2,57 +2,99 @@ name: Release Module
 
 on:
   push:
-    tags:
-      - '*-v*.*.*'
+    branches: [master]
+    paths:
+      - 'modules/**'
+  workflow_dispatch:
+    inputs:
+      module_id:
+        description: 'Module ID to release (leave empty for auto-detect)'
+        required: false
+        type: string
 
 permissions:
   contents: write
   id-token: write
   attestations: write
   pages: write
+  actions: read
 
 jobs:
-  parse-tag:
+  detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      module_id: ${{ steps.parse.outputs.module_id }}
-      version: ${{ steps.parse.outputs.version }}
-      module_path: ${{ steps.parse.outputs.module_path }}
-      module_type: ${{ steps.parse.outputs.module_type }}
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
-      - name: Parse tag
-        id: parse
+      - name: Detect changed modules
+        id: detect
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          MODULE_ID="${TAG%-v*}"
-          VERSION="${TAG##*-v}"
+          MODULES="[]"
           
-          echo "module_id=${MODULE_ID}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          
-          MODULE_PATH=$(find modules -type d -name "${MODULE_ID}" | head -1)
-          if [ -z "$MODULE_PATH" ]; then
-            echo "::error::Module ${MODULE_ID} not found"
-            exit 1
-          fi
-          echo "module_path=${MODULE_PATH}" >> "$GITHUB_OUTPUT"
-          
-          if [[ "$MODULE_PATH" == modules/abi/* ]]; then
-            echo "module_type=abi" >> "$GITHUB_OUTPUT"
-          elif [[ "$MODULE_PATH" == modules/container/* ]]; then
-            echo "module_type=container" >> "$GITHUB_OUTPUT"
-          elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
-            echo "module_type=grpc" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ inputs.module_id }}" ]; then
+            # Manual dispatch with specific module
+            MODULE_ID="${{ inputs.module_id }}"
+            MODULE_PATH=$(find modules -type d -name "$MODULE_ID" | head -1)
+            
+            if [ -z "$MODULE_PATH" ] || [ ! -f "$MODULE_PATH/manifest.yaml" ]; then
+              echo "::error::Module $MODULE_ID not found"
+              exit 1
+            fi
+            
+            VERSION=$(grep "^version:" "$MODULE_PATH/manifest.yaml" | awk '{print $2}')
+            
+            if [[ "$MODULE_PATH" == modules/abi/* ]]; then
+              MODULE_TYPE="abi"
+            elif [[ "$MODULE_PATH" == modules/container/* ]]; then
+              MODULE_TYPE="container"
+            elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
+              MODULE_TYPE="grpc"
+            fi
+            
+            MODULES=$(echo "$MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"module_path\": \"$MODULE_PATH\", \"module_type\": \"$MODULE_TYPE\"}]")
           else
-            echo "::error::Unknown module type for path ${MODULE_PATH}"
-            exit 1
+            # Auto-detect from git diff
+            CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD | grep "^modules/" | cut -d/ -f1-3 | sort -u)
+            
+            for MODULE_PATH in $CHANGED_DIRS; do
+              if [ -f "$MODULE_PATH/manifest.yaml" ]; then
+                MODULE_ID=$(basename "$MODULE_PATH")
+                VERSION=$(grep "^version:" "$MODULE_PATH/manifest.yaml" | awk '{print $2}')
+                
+                if [[ "$MODULE_PATH" == modules/abi/* ]]; then
+                  MODULE_TYPE="abi"
+                elif [[ "$MODULE_PATH" == modules/container/* ]]; then
+                  MODULE_TYPE="container"
+                elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
+                  MODULE_TYPE="grpc"
+                else
+                  continue
+                fi
+                
+                MODULES=$(echo "$MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"module_path\": \"$MODULE_PATH\", \"module_type\": \"$MODULE_TYPE\"}]")
+              fi
+            done
+          fi
+          
+          echo "matrix={\"include\":$MODULES}" >> "$GITHUB_OUTPUT"
+          
+          if [ "$MODULES" != "[]" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
           fi
 
   build:
-    needs: parse-tag
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     outputs:
       artifact_name: ${{ steps.build.outputs.artifact_name }}
       artifact_hash: ${{ steps.build.outputs.artifact_hash }}
@@ -61,11 +103,11 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup Rust
-        if: needs.parse-tag.outputs.module_type == 'abi'
+        if: matrix.module_type == 'abi'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Setup Go
-        if: needs.parse-tag.outputs.module_type == 'grpc'
+        if: matrix.module_type == 'grpc'
         uses: actions/setup-go@v6
         with:
           go-version: '1.23'
@@ -76,7 +118,7 @@ jobs:
           sudo apt-get install -y cmake build-essential libssl-dev libmosquitto-dev protobuf-compiler
 
       - name: Install Go protoc plugins
-        if: needs.parse-tag.outputs.module_type == 'grpc'
+        if: matrix.module_type == 'grpc'
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
@@ -85,9 +127,9 @@ jobs:
         id: build
         env:
           SOURCE_DATE_EPOCH: 0
-          MODULE_PATH: ${{ needs.parse-tag.outputs.module_path }}
-          MODULE_ID: ${{ needs.parse-tag.outputs.module_id }}
-          MODULE_TYPE: ${{ needs.parse-tag.outputs.module_type }}
+          MODULE_PATH: ${{ matrix.module_path }}
+          MODULE_ID: ${{ matrix.module_id }}
+          MODULE_TYPE: ${{ matrix.module_type }}
         run: |
           cd "$MODULE_PATH"
           
@@ -146,19 +188,23 @@ jobs:
           path: /tmp/${{ steps.build.outputs.artifact_name }}
 
   sign:
-    needs: [parse-tag, build]
+    needs: [detect-changes, build]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     steps:
       - uses: actions/download-artifact@v6
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
+          name: ${{ matrix.module_id }}-linux-amd64
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.10.1
 
       - name: Sign with Sigstore
         env:
-          ARTIFACT: ${{ needs.build.outputs.artifact_name }}
+          ARTIFACT: ${{ matrix.module_id }}-linux-amd64
         run: |
           cosign sign-blob "$ARTIFACT" \
             --yes \
@@ -168,53 +214,48 @@ jobs:
       - name: Upload signatures
         uses: actions/upload-artifact@v5
         with:
-          name: ${{ needs.build.outputs.artifact_name }}-sigstore
-          path: ${{ needs.build.outputs.artifact_name }}.sigstore.json
-
-  provenance:
-    needs: [parse-tag, build]
-    permissions:
-      actions: read
-      id-token: write
-      contents: write
-      attestations: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
-    with:
-      base64-subjects: ${{ needs.build.outputs.artifact_hash_base64 }}
+          name: ${{ matrix.module_id }}-linux-amd64-sigstore
+          path: ${{ matrix.module_id }}-linux-amd64.sigstore.json
 
   release:
-    needs: [parse-tag, build, sign, provenance]
+    needs: [detect-changes, build, sign]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     steps:
       - uses: actions/checkout@v6
 
       - name: Download build artifact
         uses: actions/download-artifact@v6
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
+          name: ${{ matrix.module_id }}-linux-amd64
           path: artifacts
 
       - name: Download signatures
         uses: actions/download-artifact@v6
         with:
-          name: ${{ needs.build.outputs.artifact_name }}-sigstore
+          name: ${{ matrix.module_id }}-linux-amd64-sigstore
           path: artifacts
 
-      - name: Download SLSA provenance
-        uses: actions/download-artifact@v6
-        with:
-          name: ${{ needs.provenance.outputs.provenance-name }}
-          path: artifacts
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "${{ matrix.module_id }}-v${{ matrix.version }}"
+          git push origin "${{ matrix.module_id }}-v${{ matrix.version }}" --force
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.parse-tag.outputs.module_id }}-v${{ needs.parse-tag.outputs.version }}
+          tag_name: ${{ matrix.module_id }}-v${{ matrix.version }}
           files: artifacts/*
           generate_release_notes: true
 
   update-index:
-    needs: [parse-tag, build, release]
+    needs: [detect-changes, build, release]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -229,30 +270,39 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
-      - name: Update index
+      - name: Update index for changed modules
         run: |
-          python scripts/update_index.py \
-            --module-id "${{ needs.parse-tag.outputs.module_id }}" \
-            --version "${{ needs.parse-tag.outputs.version }}" \
-            --module-type "${{ needs.parse-tag.outputs.module_type }}" \
-            --artifact-name "${{ needs.build.outputs.artifact_name }}" \
-            --artifact-hash "${{ needs.build.outputs.artifact_hash }}"
-
-      - name: Copy manifest to pages
-        run: |
-          cp "${{ needs.parse-tag.outputs.module_path }}/manifest.yaml" \
-             "pages/manifests/${{ needs.parse-tag.outputs.module_id }}.yaml"
+          MATRIX='${{ needs.detect-changes.outputs.matrix }}'
+          echo "$MATRIX" | jq -c '.include[]' | while read -r item; do
+            MODULE_ID=$(echo "$item" | jq -r '.module_id')
+            VERSION=$(echo "$item" | jq -r '.version')
+            MODULE_TYPE=$(echo "$item" | jq -r '.module_type')
+            MODULE_PATH=$(echo "$item" | jq -r '.module_path')
+            ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
+            
+            ARTIFACT_HASH=$(curl -sL "https://github.com/${{ github.repository }}/releases/download/${MODULE_ID}-v${VERSION}/${ARTIFACT_NAME}" | sha256sum | cut -d' ' -f1)
+            
+            python scripts/update_index.py \
+              --module-id "$MODULE_ID" \
+              --version "$VERSION" \
+              --module-type "$MODULE_TYPE" \
+              --artifact-name "$ARTIFACT_NAME" \
+              --artifact-hash "$ARTIFACT_HASH"
+            
+            cp "$MODULE_PATH/manifest.yaml" "pages/manifests/${MODULE_ID}.yaml"
+          done
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pages/index.yaml pages/manifests/
-          git commit -m "Update index: ${{ needs.parse-tag.outputs.module_id }} v${{ needs.parse-tag.outputs.version }}" || true
+          git commit -m "Update index for changed modules" || true
           git push || true
 
   deploy-pages:
-    needs: update-index
+    needs: [detect-changes, update-index]
+    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

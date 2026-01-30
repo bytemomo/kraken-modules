@@ -1,5 +1,5 @@
 id: mqtt_sys_disclosure
-version: 0.1.0
+version: 0.1.1
 type: abi
 description: |
   Checks if subscribing to # also receives $SYS topics, which can leak system
