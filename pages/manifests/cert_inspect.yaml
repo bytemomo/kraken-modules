@@ -1,0 +1,45 @@
+id: cert_inspect
+version: 0.1.0
+type: abi
+description: |
+  Inspects the server certificate over TLS and reports common posture issues
+  (expiry, weak keys, SHA1, self-signed, SAN/hostname mismatches).
+
+build:
+  system: cargo
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: tls
+  timeout: 30s
+  memory: 64m
+
+findings:
+  - id: CERT-EXPIRED
+    severity: critical
+    description: Certificate has expired
+  - id: CERT-EXPIRING
+    severity: medium
+    description: Certificate expiring soon
+  - id: CERT-SELFSIGNED
+    severity: medium
+    description: Self-signed certificate
+  - id: CERT-SHA1
+    severity: high
+    description: Certificate uses weak SHA1 signature
+  - id: CERT-WEAKKEY
+    severity: high
+    description: Certificate uses weak key size
+  - id: CERT-HOSTNAME
+    severity: high
+    description: Hostname mismatch
+  - id: CERT-NOSAN
+    severity: medium
+    description: Missing Subject Alternative Name
+  - id: CERT-NO-SERVER-AUTH
+    severity: medium
+    description: Certificate lacks server authentication EKU

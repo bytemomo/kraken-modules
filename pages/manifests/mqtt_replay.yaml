@@ -1,0 +1,24 @@
+id: mqtt_replay
+version: 0.1.0
+type: abi
+description: |
+  Replays fixed MQTT packet sequences to reproduce known bugs. Takes a hex-encoded
+  sequence file as parameter. Finding ID is derived from the sequence file name.
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: mqtt
+  timeout: 60s
+  memory: 64m
+
+findings:
+  - id: MQTT-REPLAY
+    severity: high
+    description: MQTT broker vulnerable to message replay

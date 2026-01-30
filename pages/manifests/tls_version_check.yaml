@@ -1,0 +1,24 @@
+id: tls_version_check
+version: 0.1.0
+type: abi
+description: |
+  Summarizes which TLS protocol versions a server accepts by attempting handshakes
+  for TLS 1.0-1.3. Severity raised to medium if TLS 1.0/1.1 are accepted.
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: tls
+  timeout: 30s
+  memory: 64m
+
+findings:
+  - id: TLS-SUPPORT-OVERVIEW
+    severity: info
+    description: TLS protocol support summary
