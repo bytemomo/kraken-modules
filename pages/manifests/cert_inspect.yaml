@@ -1,5 +1,5 @@
 id: cert_inspect
-version: 0.1.0
+version: 0.1.1
 type: abi
 description: |
   Inspects the server certificate over TLS and reports common posture issues
@@ -10,8 +10,8 @@ build:
   platforms: [linux-amd64]
 
 abi:
-  api: v2
-  symbol: kraken_run_v2
+  api: v1
+  symbol: kraken_run
 
 runtime:
   protocol: tls

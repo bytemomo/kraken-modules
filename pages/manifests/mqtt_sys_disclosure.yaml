@@ -1,5 +1,5 @@
 id: mqtt_sys_disclosure
-version: 0.1.0
+version: 0.1.1
 type: abi
 description: |
   Checks if subscribing to # also receives $SYS topics, which can leak system
@@ -10,8 +10,8 @@ build:
   platforms: [linux-amd64]
 
 abi:
-  api: v2
-  symbol: kraken_run_v2
+  api: v1
+  symbol: kraken_run
 
 runtime:
   protocol: mqtt

@@ -1,15 +1,22 @@
 version: 1
-generated: '2026-01-30T15:21:21.625161+00:00'
+generated: '2026-01-30T16:09:07.056662+00:00'
 registry_url: https://bytemomo.github.io/kraken-modules
 releases_url: https://github.com/bytemomo/kraken-modules/releases/download
 modules:
   cert_inspect:
     type: abi
-    latest: 0.1.0
+    latest: 0.1.1
     manifest_url: manifests/cert_inspect.yaml
     versions:
       0.1.0:
         tag: cert_inspect-v0.1.0
+        artifacts:
+          linux-amd64:
+            file: cert_inspect-linux-amd64
+            sha256: 6d68620ea59196c4861728c8a6850d498ddde07155eb902e8ed8e4da299333a1
+            bundle: cert_inspect-linux-amd64.sigstore.json
+      0.1.1:
+        tag: cert_inspect-v0.1.1
         artifacts:
           linux-amd64:
             file: cert_inspect-linux-amd64
@@ -77,7 +84,7 @@ modules:
             bundle: mqtt_auth_check-linux-amd64.sigstore.json
   mqtt_replay:
     type: abi
-    latest: 0.1.0
+    latest: 0.1.1
     manifest_url: manifests/mqtt_replay.yaml
     versions:
       0.1.0:
@@ -87,9 +94,16 @@ modules:
             file: mqtt_replay-linux-amd64
             sha256: e826b3f615f3f13bbeae558eab1dc4cda3578e0957c34504082413190a688705
             bundle: mqtt_replay-linux-amd64.sigstore.json
+      0.1.1:
+        tag: mqtt_replay-v0.1.1
+        artifacts:
+          linux-amd64:
+            file: mqtt_replay-linux-amd64
+            sha256: e826b3f615f3f13bbeae558eab1dc4cda3578e0957c34504082413190a688705
+            bundle: mqtt_replay-linux-amd64.sigstore.json
   mqtt_sys_disclosure:
     type: abi
-    latest: 0.1.0
+    latest: 0.1.1
     manifest_url: manifests/mqtt_sys_disclosure.yaml
     versions:
       0.1.0:
@@ -99,13 +113,27 @@ modules:
             file: mqtt_sys_disclosure-linux-amd64
             sha256: c866b0ce7fcd16d04492a1373de0b2e8b8ab9794e9c4506b911e8fa0fc9f9dee
             bundle: mqtt_sys_disclosure-linux-amd64.sigstore.json
+      0.1.1:
+        tag: mqtt_sys_disclosure-v0.1.1
+        artifacts:
+          linux-amd64:
+            file: mqtt_sys_disclosure-linux-amd64
+            sha256: c866b0ce7fcd16d04492a1373de0b2e8b8ab9794e9c4506b911e8fa0fc9f9dee
+            bundle: mqtt_sys_disclosure-linux-amd64.sigstore.json
   tls_version_check:
     type: abi
-    latest: 0.1.0
+    latest: 0.1.1
     manifest_url: manifests/tls_version_check.yaml
     versions:
       0.1.0:
         tag: tls_version_check-v0.1.0
+        artifacts:
+          linux-amd64:
+            file: tls_version_check-linux-amd64
+            sha256: 77edeae6c9ea6c25a5b5b31e654b4bbc8425a323f76cf0cc088ecc0d6497f757
+            bundle: tls_version_check-linux-amd64.sigstore.json
+      0.1.1:
+        tag: tls_version_check-v0.1.1
         artifacts:
           linux-amd64:
             file: tls_version_check-linux-amd64
