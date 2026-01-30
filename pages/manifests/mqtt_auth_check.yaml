@@ -1,0 +1,40 @@
+id: mqtt_auth_check
+version: 0.1.0
+type: abi
+description: |
+  Checks MQTT authentication posture. Verifies anonymous CONNECT acceptance,
+  basic pub/sub permissions, and tests credentials from wordlist on fresh conduits.
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: mqtt
+  timeout: 30s
+  memory: 64m
+
+params:
+  type: object
+  properties:
+    wordlist:
+      type: string
+      description: Path to credential wordlist
+    timeout_ms:
+      type: integer
+      default: 5000
+
+findings:
+  - id: MQTT-ANON
+    severity: high
+    description: Anonymous authentication is allowed
+  - id: MQTT-PUBSUB-ANON
+    severity: critical
+    description: Anonymous publish/subscribe is allowed
+  - id: MQTT-WEAK-CREDS
+    severity: high
+    description: Weak credentials accepted

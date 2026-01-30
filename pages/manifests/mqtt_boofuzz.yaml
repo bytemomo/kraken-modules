@@ -1,0 +1,45 @@
+id: mqtt_boofuzz
+version: 0.1.0
+type: container
+description: |
+  MQTT protocol fuzzer using boofuzz. Tests CONNECT, PUBLISH, SUBSCRIBE,
+  and other MQTT v5 packets with protocol-aware mutations.
+
+build:
+  system: docker
+  platforms: [linux-amd64]
+
+container:
+  dockerfile: Dockerfile
+
+runtime:
+  protocol: mqtt
+  timeout: 5m
+  memory: 512m
+
+params:
+  type: object
+  properties:
+    host:
+      type: string
+      description: Target MQTT broker host
+    port:
+      type: integer
+      default: 1883
+      description: Target MQTT broker port
+    test_case_index:
+      type: string
+      description: Specific test case index or range (e.g., "1-100")
+  required:
+    - host
+
+findings:
+  - id: FUZZ-FAIL
+    severity: medium
+    description: Fuzzing triggered a failure condition in the target
+  - id: FUZZ-CRASH
+    severity: high
+    description: Fuzzing triggered a crash in the target
+  - id: FUZZ-COMPLETE
+    severity: info
+    description: Fuzzing completed without detecting issues
