@@ -48,10 +48,9 @@ properties:
     properties:
       api:
         type: string
-        enum: [v2]
+        enum: [v1, v2]
       symbol:
         type: string
-        default: kraken_run_v2
 
   container:
     type: object
