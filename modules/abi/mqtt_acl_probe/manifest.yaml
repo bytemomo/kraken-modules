@@ -1,0 +1,38 @@
+id: mqtt_acl_probe
+version: 0.1.0
+type: abi
+description: |
+  Probes MQTT ACLs by iterating credentials (or anonymous) and checking
+  CONNECT acceptance, SUBSCRIBE to a probe topic, and PUBLISH to the same topic.
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: mqtt
+  timeout: 30s
+  memory: 64m
+
+params:
+  type: object
+  properties:
+    topic:
+      type: string
+      description: Topic to probe
+    username:
+      type: string
+    password:
+      type: string
+
+findings:
+  - id: MQTT-ACL-SUB
+    severity: high
+    description: Probe topic subscription accepted
+  - id: MQTT-ACL-PUB
+    severity: high
+    description: Probe topic publish acknowledged

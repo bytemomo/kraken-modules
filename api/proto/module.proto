@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package kraken.module.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = ".;modulepb";
+
+// ------------------------------
+// Messages
+// ------------------------------
+
+message Finding {
+  string id = 1;
+  string module_id = 2;
+
+  bool success = 3;
+  string title = 4;
+  string severity = 5;      // e.g., "info","low","medium","high","critical"
+  string description = 6;
+
+  map<string, string> evidence = 7;
+  repeated string tags = 8;
+
+  int64 timestamp = 9;
+}
+
+message LogLine {
+  int64 ts = 1;
+  string line = 2;
+}
+
+message RunResponse {
+  repeated Finding findings = 1;
+  repeated LogLine logs = 2;
+}
+
+message ModuleMetadata {
+  string id = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+}
+
+// ------------------------------
+// Conduit messages
+// ------------------------------
+
+enum ConduitKind {
+  CONDUIT_KIND_UNSPECIFIED = 0;
+  CONDUIT_KIND_STREAM     = 1; // TCP/TLS byte-stream
+  CONDUIT_KIND_DATAGRAM   = 2; // UDP/DTLS message-oriented
+  CONDUIT_KIND_FRAME      = 3; // Ethernet frame (Layer 2)
+}
+
+// ConnInfo describes an established conduit connection.
+message ConnInfo {
+  uint32          conn_id     = 1;
+  ConduitKind     kind        = 2;
+  repeated string stack       = 3; // e.g. ["tcp", "tls"]
+  string          local_addr  = 4;
+  string          remote_addr = 5;
+}
+
+// --- Runner -> Module ---
+
+// RunnerMsg is the runner-to-module envelope on the bidi stream.
+message RunnerMsg {
+  oneof msg {
+    ConduitInit     init         = 1;
+    ConduitResponse response     = 2;
+    RunnerError     stream_error = 3;
+  }
+}
+
+// ConduitInit is the first message the runner sends.
+message ConduitInit {
+  uint32 timeout_ms = 1;
+  map<string, google.protobuf.Value> params = 2;
+  ConnInfo conn = 3; // Pre-dialed initial connection (conn_id=0)
+}
+
+// ConduitResponse carries the result of a single module command.
+message ConduitResponse {
+  uint64 seq = 1; // Correlation ID matching the request
+
+  oneof result {
+    SendResult  send_result  = 10;
+    RecvResult  recv_result  = 11;
+    OpenResult  open_result  = 12;
+    CloseResult close_result = 13;
+  }
+}
+
+message SendResult {
+  int32  bytes_written = 1;
+  string error         = 2;
+}
+
+message RecvResult {
+  bytes  data  = 1;
+  bool   eof   = 2;
+  string error = 3;
+}
+
+message OpenResult {
+  ConnInfo conn  = 1; // nil on error
+  string   error = 2;
+}
+
+message CloseResult {
+  string error = 1;
+}
+
+// RunnerError signals a fatal runner-side failure.
+message RunnerError {
+  string message = 1;
+}
+
+// --- Module -> Runner ---
+
+// ModuleMsg is the module-to-runner envelope on the bidi stream.
+message ModuleMsg {
+  oneof msg {
+    ConduitCommand command = 1;
+    ModuleDone     done    = 2;
+  }
+}
+
+// ConduitCommand is a single I/O operation request from the module.
+message ConduitCommand {
+  uint64 seq = 1; // Unique monotonic correlation ID
+
+  oneof op {
+    SendCmd  send  = 10;
+    RecvCmd  recv  = 11;
+    OpenCmd  open  = 12;
+    CloseCmd close = 13;
+  }
+}
+
+message SendCmd {
+  uint32 conn_id = 1;
+  bytes  data    = 2;
+}
+
+message RecvCmd {
+  uint32 conn_id    = 1;
+  uint32 timeout_ms = 2; // 0 = use stream deadline
+  uint32 max_bytes  = 3; // 0 = default 64KB
+}
+
+message OpenCmd {
+  uint32 timeout_ms = 1; // 0 = use default
+}
+
+message CloseCmd {
+  uint32 conn_id = 1;
+}
+
+// ModuleDone is the final message from the module.
+message ModuleDone {
+  RunResponse response = 1;
+}
+
+// ------------------------------
+// Service
+// ------------------------------
+
+service KrakenModule {
+  rpc RunWithConduit(stream RunnerMsg) returns (stream ModuleMsg);
+  rpc Metadata(google.protobuf.Empty) returns (ModuleMetadata);
+}

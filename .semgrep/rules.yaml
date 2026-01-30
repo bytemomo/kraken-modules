@@ -1,0 +1,89 @@
+rules:
+  # Dockerfile rules
+  - id: no-curl-bash
+    patterns:
+      - pattern-either:
+          - pattern: curl ... | sh
+          - pattern: curl ... | bash
+          - pattern: wget ... | sh
+          - pattern: wget ... | bash
+    message: "Do not pipe curl/wget to shell - download and verify first"
+    severity: ERROR
+    languages: [dockerfile, bash]
+
+  - id: pinned-base-image
+    pattern-regex: "^FROM\\s+[^@:]+:latest"
+    message: "Use pinned base image version, not :latest"
+    severity: ERROR
+    languages: [dockerfile]
+
+  - id: no-privileged-container
+    pattern-regex: "--privileged"
+    message: "Avoid privileged containers"
+    severity: WARNING
+    languages: [dockerfile]
+
+  # C rules for ABI modules
+  - id: no-hardcoded-ip
+    pattern-regex: '"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"'
+    paths:
+      include:
+        - modules/abi/**
+    message: "Hardcoded IP address detected"
+    severity: WARNING
+    languages: [c]
+
+  - id: no-hardcoded-url
+    pattern-regex: '"https?://[^"]+"|"wss?://[^"]+"'
+    paths:
+      include:
+        - modules/abi/**
+    message: "Hardcoded URL detected"
+    severity: WARNING
+    languages: [c]
+
+  - id: no-system-call
+    patterns:
+      - pattern-either:
+          - pattern: system($ARG)
+          - pattern: popen($ARG, ...)
+          - pattern: execve($ARG, ...)
+          - pattern: execl($ARG, ...)
+          - pattern: execlp($ARG, ...)
+    paths:
+      include:
+        - modules/abi/**
+    message: "Shell execution not allowed in ABI modules"
+    severity: ERROR
+    languages: [c]
+
+  # Rust rules for ABI modules
+  - id: no-std-process-rust
+    patterns:
+      - pattern-either:
+          - pattern: std::process::Command::new(...)
+          - pattern: Command::new(...)
+    paths:
+      include:
+        - modules/abi/**
+    message: "Process spawning not allowed in ABI modules"
+    severity: ERROR
+    languages: [rust]
+
+  - id: no-hardcoded-ip-rust
+    pattern-regex: '"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"'
+    paths:
+      include:
+        - modules/abi/**
+    message: "Hardcoded IP address detected"
+    severity: WARNING
+    languages: [rust]
+
+  - id: no-hardcoded-url-rust
+    pattern-regex: '"https?://[^"]+"|"wss?://[^"]+"'
+    paths:
+      include:
+        - modules/abi/**
+    message: "Hardcoded URL detected"
+    severity: WARNING
+    languages: [rust]

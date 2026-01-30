@@ -1,0 +1,22 @@
+id: ecat_dos
+version: 0.1.0
+type: abi
+description: EtherCAT denial of service testing
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: ethercat
+  timeout: 60s
+  memory: 64m
+
+findings:
+  - id: ECAT-DOS
+    severity: medium
+    description: EtherCAT network susceptible to DoS

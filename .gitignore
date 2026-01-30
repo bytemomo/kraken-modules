@@ -1,0 +1,36 @@
+# Ignore everything
+*
+
+# Allow structure
+!.gitignore
+!.github/
+!.github/**
+!.semgrep/
+!.semgrep/**
+!modules/
+!modules/**
+!pages/
+!pages/**
+!scripts/
+!scripts/**
+!testenv/
+!testenv/**
+!api/
+!api/**
+
+# Allow docs
+!README.md
+
+# Ignore build artifacts in allowed dirs
+**/__pycache__/
+**/*.pyc
+**/target/
+**/build/
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.o
+**/*.a
+**/node_modules/
+**/.venv/
+**/venv/

@@ -1,0 +1,6 @@
+version: 1
+generated: null
+registry_url: https://bytemomo.github.io/kraken-modules
+releases_url: https://github.com/bytemomo/kraken-modules/releases/download
+
+modules: {}

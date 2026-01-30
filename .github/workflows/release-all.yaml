@@ -1,0 +1,237 @@
+name: Release All Modules
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml jsonschema
+
+      - name: Validate all manifests
+        run: python scripts/check_manifest.py
+
+      - name: Run Semgrep
+        uses: docker://semgrep/semgrep:1.150.0
+        with:
+          args: semgrep scan --config .semgrep/rules.yaml --error
+
+  build-sign-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      released_modules: ${{ steps.release-all.outputs.released_modules }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev libmosquitto-dev protobuf-compiler
+
+      - name: Install Go protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.10.1
+
+      - name: Build, sign and release all modules
+        id: release-all
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_DATE_EPOCH: 0
+        run: |
+          RELEASED_MODULES="[]"
+          
+          for manifest in $(find modules -name "manifest.yaml" | sort); do
+            MODULE_PATH=$(dirname "$manifest")
+            MODULE_ID=$(basename "$MODULE_PATH")
+            VERSION=$(grep "^version:" "$manifest" | awk '{print $2}')
+            TAG="${MODULE_ID}-v${VERSION}"
+            
+            echo "::group::Processing ${MODULE_ID} v${VERSION}"
+            
+            if [[ "$MODULE_PATH" == modules/abi/* ]]; then
+              MODULE_TYPE="abi"
+            elif [[ "$MODULE_PATH" == modules/container/* ]]; then
+              MODULE_TYPE="container"
+            elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
+              MODULE_TYPE="grpc"
+            else
+              echo "::warning::Unknown module type for ${MODULE_PATH}, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+            
+            cd "$MODULE_PATH"
+            
+            case "$MODULE_TYPE" in
+              abi)
+                if [ -f "Cargo.toml" ]; then
+                  cargo build --release
+                  ARTIFACT="target/release/lib${MODULE_ID}.so"
+                elif [ -f "CMakeLists.txt" ]; then
+                  mkdir -p build && cd build
+                  cmake .. -DCMAKE_BUILD_TYPE=Release
+                  make
+                  cd ..
+                  ARTIFACT=$(find build -name "*.so" | head -1)
+                else
+                  echo "::error::Unknown build system for ${MODULE_ID}"
+                  exit 1
+                fi
+                ;;
+              container)
+                ARTIFACT="/tmp/${MODULE_ID}.tar.gz"
+                tar -czf "$ARTIFACT" --exclude='*.tar.gz' .
+                ;;
+              grpc)
+                if [ -f "go.mod" ]; then
+                  if [ -f "generate.sh" ]; then
+                    chmod +x generate.sh
+                    ./generate.sh
+                  fi
+                  CGO_ENABLED=0 go build -ldflags="-s -w" -o "${MODULE_ID}" .
+                  ARTIFACT="${MODULE_ID}"
+                elif [ -f "Cargo.toml" ]; then
+                  cargo build --release
+                  ARTIFACT="target/release/${MODULE_ID}"
+                else
+                  echo "::error::Unknown build system for grpc ${MODULE_ID}"
+                  exit 1
+                fi
+                ;;
+            esac
+            
+            ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
+            cp "$ARTIFACT" "/tmp/${ARTIFACT_NAME}"
+            
+            HASH=$(sha256sum "/tmp/${ARTIFACT_NAME}" | cut -d' ' -f1)
+            
+            cosign sign-blob "/tmp/${ARTIFACT_NAME}" \
+              --yes \
+              --new-bundle-format \
+              --bundle "/tmp/${ARTIFACT_NAME}.sigstore.json"
+            
+            git tag -f "$TAG"
+            git push origin "$TAG" --force
+            
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            gh release create "$TAG" \
+              "/tmp/${ARTIFACT_NAME}" \
+              "/tmp/${ARTIFACT_NAME}.sigstore.json" \
+              --title "${MODULE_ID} v${VERSION}" \
+              --generate-notes
+            
+            RELEASED_MODULES=$(echo "$RELEASED_MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"type\": \"$MODULE_TYPE\", \"artifact\": \"$ARTIFACT_NAME\", \"hash\": \"$HASH\"}]")
+            
+            cd "$GITHUB_WORKSPACE"
+            echo "::endgroup::"
+          done
+          
+          echo "released_modules=${RELEASED_MODULES}" >> "$GITHUB_OUTPUT"
+
+  update-index:
+    needs: build-sign-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Update index for all modules
+        env:
+          RELEASED_MODULES: ${{ needs.build-sign-release.outputs.released_modules }}
+        run: |
+          echo "$RELEASED_MODULES" | jq -c '.[]' | while read -r item; do
+            MODULE_ID=$(echo "$item" | jq -r '.module_id')
+            VERSION=$(echo "$item" | jq -r '.version')
+            MODULE_TYPE=$(echo "$item" | jq -r '.type')
+            ARTIFACT_NAME=$(echo "$item" | jq -r '.artifact')
+            ARTIFACT_HASH=$(echo "$item" | jq -r '.hash')
+            
+            python scripts/update_index.py \
+              --module-id "$MODULE_ID" \
+              --version "$VERSION" \
+              --module-type "$MODULE_TYPE" \
+              --artifact-name "$ARTIFACT_NAME" \
+              --artifact-hash "$ARTIFACT_HASH"
+          done
+
+      - name: Copy all manifests to pages
+        run: |
+          for manifest in $(find modules -name "manifest.yaml"); do
+            MODULE_PATH=$(dirname "$manifest")
+            MODULE_ID=$(basename "$MODULE_PATH")
+            cp "$manifest" "pages/manifests/${MODULE_ID}.yaml"
+          done
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pages/index.yaml pages/manifests/
+          git commit -m "Update index: release-all" || true
+          git push || true
+
+  deploy-pages:
+    needs: update-index
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Pull latest
+        run: git pull
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,278 @@
+name: Release Module
+
+on:
+  push:
+    tags:
+      - '*-v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  parse-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      module_id: ${{ steps.parse.outputs.module_id }}
+      version: ${{ steps.parse.outputs.version }}
+      module_path: ${{ steps.parse.outputs.module_path }}
+      module_type: ${{ steps.parse.outputs.module_type }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          MODULE_ID="${TAG%-v*}"
+          VERSION="${TAG##*-v}"
+          
+          echo "module_id=${MODULE_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          
+          MODULE_PATH=$(find modules -type d -name "${MODULE_ID}" | head -1)
+          if [ -z "$MODULE_PATH" ]; then
+            echo "::error::Module ${MODULE_ID} not found"
+            exit 1
+          fi
+          echo "module_path=${MODULE_PATH}" >> "$GITHUB_OUTPUT"
+          
+          if [[ "$MODULE_PATH" == modules/abi/* ]]; then
+            echo "module_type=abi" >> "$GITHUB_OUTPUT"
+          elif [[ "$MODULE_PATH" == modules/container/* ]]; then
+            echo "module_type=container" >> "$GITHUB_OUTPUT"
+          elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
+            echo "module_type=grpc" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown module type for path ${MODULE_PATH}"
+            exit 1
+          fi
+
+  build:
+    needs: parse-tag
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.build.outputs.artifact_name }}
+      artifact_hash: ${{ steps.build.outputs.artifact_hash }}
+      artifact_hash_base64: ${{ steps.build.outputs.artifact_hash_base64 }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        if: needs.parse-tag.outputs.module_type == 'abi'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        if: needs.parse-tag.outputs.module_type == 'grpc'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev libmosquitto-dev protobuf-compiler
+
+      - name: Install Go protoc plugins
+        if: needs.parse-tag.outputs.module_type == 'grpc'
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+
+      - name: Build module
+        id: build
+        env:
+          SOURCE_DATE_EPOCH: 0
+          MODULE_PATH: ${{ needs.parse-tag.outputs.module_path }}
+          MODULE_ID: ${{ needs.parse-tag.outputs.module_id }}
+          MODULE_TYPE: ${{ needs.parse-tag.outputs.module_type }}
+        run: |
+          cd "$MODULE_PATH"
+          
+          case "$MODULE_TYPE" in
+            abi)
+              if [ -f "Cargo.toml" ]; then
+                cargo build --release
+                ARTIFACT="target/release/lib${MODULE_ID}.so"
+              elif [ -f "CMakeLists.txt" ]; then
+                mkdir -p build && cd build
+                cmake .. -DCMAKE_BUILD_TYPE=Release
+                make
+                cd ..
+                ARTIFACT=$(find build -name "*.so" | head -1)
+              else
+                echo "::error::Unknown build system"
+                exit 1
+              fi
+              ;;
+            container)
+              ARTIFACT="/tmp/${MODULE_ID}.tar.gz"
+              tar -czf "$ARTIFACT" --exclude='*.tar.gz' .
+              ;;
+            grpc)
+              if [ -f "go.mod" ]; then
+                if [ -f "generate.sh" ]; then
+                  chmod +x generate.sh
+                  ./generate.sh
+                fi
+                CGO_ENABLED=0 go build -ldflags="-s -w" -o "${MODULE_ID}" .
+                ARTIFACT="${MODULE_ID}"
+              elif [ -f "Cargo.toml" ]; then
+                cargo build --release
+                ARTIFACT="target/release/${MODULE_ID}"
+              else
+                echo "::error::Unknown build system for grpc"
+                exit 1
+              fi
+              ;;
+          esac
+          
+          ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
+          cp "$ARTIFACT" "/tmp/${ARTIFACT_NAME}"
+          
+          HASH=$(sha256sum "/tmp/${ARTIFACT_NAME}" | cut -d' ' -f1)
+          HASH_BASE64=$(echo "$HASH  $ARTIFACT_NAME" | base64 -w0)
+          
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "artifact_hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "artifact_hash_base64=${HASH_BASE64}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: /tmp/${{ steps.build.outputs.artifact_name }}
+
+  sign:
+    needs: [parse-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.10.1
+
+      - name: Sign with Sigstore
+        env:
+          ARTIFACT: ${{ needs.build.outputs.artifact_name }}
+        run: |
+          cosign sign-blob "$ARTIFACT" \
+            --yes \
+            --new-bundle-format \
+            --bundle "${ARTIFACT}.sigstore.json"
+
+      - name: Upload signatures
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}-sigstore
+          path: ${{ needs.build.outputs.artifact_name }}.sigstore.json
+
+  provenance:
+    needs: [parse-tag, build]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+      attestations: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.artifact_hash_base64 }}
+
+  release:
+    needs: [parse-tag, build, sign, provenance]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: artifacts
+
+      - name: Download signatures
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}-sigstore
+          path: artifacts
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.parse-tag.outputs.module_id }}-v${{ needs.parse-tag.outputs.version }}
+          files: artifacts/*
+          generate_release_notes: true
+
+  update-index:
+    needs: [parse-tag, build, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Update index
+        run: |
+          python scripts/update_index.py \
+            --module-id "${{ needs.parse-tag.outputs.module_id }}" \
+            --version "${{ needs.parse-tag.outputs.version }}" \
+            --module-type "${{ needs.parse-tag.outputs.module_type }}" \
+            --artifact-name "${{ needs.build.outputs.artifact_name }}" \
+            --artifact-hash "${{ needs.build.outputs.artifact_hash }}"
+
+      - name: Copy manifest to pages
+        run: |
+          cp "${{ needs.parse-tag.outputs.module_path }}/manifest.yaml" \
+             "pages/manifests/${{ needs.parse-tag.outputs.module_id }}.yaml"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pages/index.yaml pages/manifests/
+          git commit -m "Update index: ${{ needs.parse-tag.outputs.module_id }} v${{ needs.parse-tag.outputs.version }}" || true
+          git push || true
+
+  deploy-pages:
+    needs: update-index
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - name: Pull latest
+        run: git pull
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

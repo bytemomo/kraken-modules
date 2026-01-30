@@ -1,0 +1,22 @@
+id: ecat_inject
+version: 0.1.0
+type: abi
+description: EtherCAT frame injection testing
+
+build:
+  system: cmake
+  platforms: [linux-amd64]
+
+abi:
+  api: v2
+  symbol: kraken_run_v2
+
+runtime:
+  protocol: ethercat
+  timeout: 60s
+  memory: 64m
+
+findings:
+  - id: ECAT-INJECTION
+    severity: medium
+    description: EtherCAT network accepts injected frames
