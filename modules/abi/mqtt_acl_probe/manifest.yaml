@@ -1,5 +1,5 @@
 id: mqtt_acl_probe
-version: 0.1.0
+version: 0.2.0
 type: abi
 description: |
   Probes MQTT ACLs by iterating credentials (or anonymous) and checking
