@@ -19,8 +19,14 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+/* ------------------------------------------------------------------ */
+/* ABI Version Export                                                 */
+/* ------------------------------------------------------------------ */
 KRAKEN_API const uint32_t KRAKEN_MODULE_ABI_VERSION = KRAKEN_ABI_VERSION;
 
+/* ------------------------------------------------------------------ */
+/* OpenSSL Version Compatibility                                      */
+/* ------------------------------------------------------------------ */
 #ifndef TLS1_VERSION
 #define TLS1_VERSION 0
 #endif
@@ -34,6 +40,9 @@ KRAKEN_API const uint32_t KRAKEN_MODULE_ABI_VERSION = KRAKEN_ABI_VERSION;
 #define TLS1_3_VERSION 0
 #endif
 
+/* ------------------------------------------------------------------ */
+/* TLS Check Logic                                                    */
+/* ------------------------------------------------------------------ */
 
 static int parse_tls_version(const char *vstr) {
     if (!vstr)
@@ -59,14 +68,14 @@ static int parse_tls_version(const char *vstr) {
 
 static int try_tls_version(const char *host, uint16_t port, const char *sni, int version, uint32_t timeout_ms) {
     if (version == 0) {
-        return -1;
+        return -1; // Indicates the version is not available in this OpenSSL build
     }
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx)
         return 0;
 
-   
+    // Set the specific TLS protocol version to test
     SSL_CTX_set_min_proto_version(ctx, version);
     SSL_CTX_set_max_proto_version(ctx, version);
 
@@ -80,17 +89,17 @@ static int try_tls_version(const char *host, uint16_t port, const char *sni, int
     snprintf(target, sizeof(target), "%s:%u", host, port);
     BIO_set_conn_hostname(bio, target);
 
-   
+    // Set non-blocking mode for timeout control
     BIO_set_nbio(bio, 1);
 
     SSL *ssl = NULL;
     BIO_get_ssl(bio, &ssl);
     if (ssl) {
-       
+        // Set SNI, which is crucial for many modern servers
         SSL_set_tlsext_host_name(ssl, sni ? sni : (char *)host);
     }
 
-   
+    // Attempt to connect with timeout
     long timeout_sec = timeout_ms > 0 ? (long)((timeout_ms + 999) / 1000) : 10;
     time_t start = time(NULL);
     int ok = 0;
@@ -105,9 +114,9 @@ static int try_tls_version(const char *host, uint16_t port, const char *sni, int
             break;
         }
         if (time(NULL) - start >= timeout_sec) {
-            break;
+            break; // Timeout
         }
-        struct timeval tv = {0, 100000};
+        struct timeval tv = {0, 100000}; // 100ms
         select(0, NULL, NULL, NULL, &tv);
     }
 
@@ -124,6 +133,9 @@ static const char *status_str(int v) {
     return v ? "supported" : "not_supported";
 }
 
+/* ------------------------------------------------------------------ */
+/* Module Entry Point                                                 */
+/* ------------------------------------------------------------------ */
 
 KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, const char *params_json, KrakenRunResult **out_result) {
 #ifdef _WIN32
@@ -131,20 +143,20 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
 
-   
+    // OpenSSL initialization (for versions < 1.1.0)
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
 #endif
 
-   
+    // Parameters
     char *min_version_str = json_extract_string(params_json, "min_version");
     char *max_version_str = json_extract_string(params_json, "max_version");
     char *sni_override = json_extract_string(params_json, "sni");
     int min_version = parse_tls_version(min_version_str);
     int max_version = parse_tls_version(max_version_str);
 
-   
+    // 1. Allocate and initialize the main result structure
     KrakenRunResult *result = (KrakenRunResult *)calloc(1, sizeof(KrakenRunResult));
     if (!result)
         return -1;
@@ -152,7 +164,7 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
     result->target.host = mystrdup(host);
     result->target.port = (uint16_t)port;
 
-   
+    // 2. Perform TLS version checks
     const int versions_to_check[] = {TLS1_VERSION, TLS1_1_VERSION, TLS1_2_VERSION, TLS1_3_VERSION};
     const char *version_names[] = {"TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3"};
     const char *version_keys[] = {"tls1.0", "tls1.1", "tls1.2", "tls1.3"};
@@ -176,23 +188,23 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
         add_log(result, log_buf);
     }
 
-   
+    // 3. Create a single finding to report all results
     result->findings_count = 1;
     result->findings = (KrakenFinding *)calloc(1, sizeof(KrakenFinding));
     KrakenFinding *f = &result->findings[0];
 
+    int weak = (results[0] == 1 || results[1] == 1) ? 1 : 0;
     f->id = mystrdup("TLS-SUPPORT-OVERVIEW");
     f->module_id = mystrdup("tls_version_check");
-    f->success = true;
+    f->success = weak;
     f->title = mystrdup("TLS Protocol Support Summary");
-    int weak = (results[0] == 1 || results[1] == 1) ? 1 : 0;
     f->severity = mystrdup(weak ? "medium" : "info");
     f->description = mystrdup(weak ? "Weak TLS protocol versions accepted (1.0/1.1). Review hardening." : "TLS protocol support summary.");
     f->timestamp = time(NULL);
     f->target.host = mystrdup(host);
     f->target.port = (uint16_t)port;
 
-   
+    // 4. Populate evidence with the results of each check
     f->evidence.count = 4;
     f->evidence.items = (KrakenKeyValue *)malloc(4 * sizeof(KrakenKeyValue));
     for (int i = 0; i < 4; ++i) {
@@ -200,13 +212,13 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
         f->evidence.items[i].value = mystrdup(status_str(results[i]));
     }
 
-   
+    // 5. Add relevant tags
     f->tags.count = 2;
     f->tags.strings = (const char **)malloc(2 * sizeof(char *));
     f->tags.strings[0] = mystrdup("tls");
     f->tags.strings[1] = mystrdup("ssl");
 
-   
+    // 6. Finalize and return
     free(min_version_str);
     free(max_version_str);
     free(sni_override);
@@ -215,9 +227,12 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
 #ifdef _WIN32
     WSACleanup();
 #endif
-    return 0;
+    return 0; // Success
 }
 
+/* ------------------------------------------------------------------ */
+/* Memory Deallocator                                                 */
+/* ------------------------------------------------------------------ */
 
 KRAKEN_API void kraken_free(void *p) {
     if (!p)

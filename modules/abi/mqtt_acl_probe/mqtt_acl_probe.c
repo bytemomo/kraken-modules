@@ -32,6 +32,7 @@ static void free_cred_list(cred_list_t *cl) {
     cl->count = 0;
 }
 
+/* MQTT helpers */
 typedef struct {
     uint8_t buf[1024];
     size_t len;
@@ -53,13 +54,13 @@ static int mqtt_build_connect(mqtt_packet_t *pkt, const char *client_id, const c
     int wrote = mqtt_encode_string(p, proto);
     if (wrote < 0) return -1;
     p += wrote;
-    *p++ = 4;
+    *p++ = 4; // Protocol level 3.1.1
     uint8_t flags = 0;
     if (user && *user) flags |= 0x80;
     if (pass && *pass) flags |= 0x40;
     *p++ = flags;
     *p++ = 0;
-    *p++ = 60;
+    *p++ = 60; // Keepalive 60s
     wrote = mqtt_encode_string(p, client_id);
     if (wrote < 0) return -1;
     p += wrote;
@@ -77,7 +78,7 @@ static int mqtt_build_connect(mqtt_packet_t *pkt, const char *client_id, const c
     size_t rem_len = p - pkt->buf;
     uint8_t head[5];
     size_t hl = 1;
-    head[0] = 0x10;
+    head[0] = 0x10; // CONNECT
     size_t x = rem_len;
     do {
         uint8_t b = x % 128;
@@ -98,14 +99,14 @@ static int mqtt_build_subscribe(mqtt_packet_t *pkt, const char *topic) {
     uint8_t *p = pkt->buf;
     size_t topic_len = strlen(topic);
     size_t rem_len = 2 + 2 + topic_len + 1;
-    *p++ = 0x82;
+    *p++ = 0x82; // SUBSCRIBE QoS1
     *p++ = (uint8_t)rem_len;
     *p++ = 0;
-    *p++ = 1;
+    *p++ = 1; // Packet ID
     int wrote = mqtt_encode_string(p, topic);
     if (wrote < 0) return -1;
     p += wrote;
-    *p++ = 0;
+    *p++ = 0; // QoS 0
     pkt->len = p - pkt->buf;
     return (int)pkt->len;
 }
@@ -113,10 +114,10 @@ static int mqtt_build_subscribe(mqtt_packet_t *pkt, const char *topic) {
 static int mqtt_build_publish_qos1(mqtt_packet_t *pkt, const char *topic, const char *msg) {
     pkt->len = 0;
     uint8_t *p = pkt->buf;
-    *p++ = 0x32;
+    *p++ = 0x32; // PUBLISH QoS1
     size_t topic_len = strlen(topic);
     size_t msg_len = strlen(msg);
-    size_t rem_len = 2 + topic_len + 2 + msg_len;
+    size_t rem_len = 2 + topic_len + 2 + msg_len; // topic len + packet id + payload
     size_t rem_temp = rem_len;
     do {
         uint8_t b = rem_temp % 128;
@@ -127,8 +128,8 @@ static int mqtt_build_publish_qos1(mqtt_packet_t *pkt, const char *topic, const 
     int wrote = mqtt_encode_string(p, topic);
     if (wrote < 0) return -1;
     p += wrote;
-    *p++ = 0;
-    *p++ = 2;
+    *p++ = 0; // Packet ID MSB
+    *p++ = 2; // Packet ID LSB
     memcpy(p, msg, msg_len);
     p += msg_len;
     pkt->len = p - pkt->buf;
@@ -206,7 +207,7 @@ static cred_list_t load_creds(const char *path) {
     if (!f) return cl;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-       
+        // trim newline
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
         if (len == 0 || line[0] == '#') continue;
@@ -248,7 +249,7 @@ static char *extract_string_param(const char *params_json, const char *key) {
     if (!colon) return NULL;
     const char *q = strchr(colon, '\"');
     if (!q) return NULL;
-    q++;
+    q++; // after quote
     const char *end = strchr(q, '\"');
     if (!end) return NULL;
     size_t len = (size_t)(end - q);
@@ -301,7 +302,7 @@ static int probe_credential(KrakenRunResultV2 *res, const KrakenTarget *target, 
         return 0;
     }
 
-   
+    // SUBSCRIBE
     if (mqtt_build_subscribe(&pkt, topic) < 0 || send_all(ops, h, pkt.buf, pkt.len, timeout_ms) != 0) {
         log_prefixed(res, "SUBSCRIBE send failed");
         add_acl_finding(res, target, "MQTT-ACL-SUB", "MQTT SUBSCRIBE to probe topic", "info", "Probe topic subscription send failed.", cred, false);
@@ -318,12 +319,12 @@ static int probe_credential(KrakenRunResultV2 *res, const KrakenTarget *target, 
         log_prefixed(res, "SUBSCRIBE rejected");
     }
 
-   
+    // PUBLISH QoS1
     const char *payload = "kraken-acl-probe";
     if (mqtt_build_publish_qos1(&pkt, topic, payload) >= 0 && send_all(ops, h, pkt.buf, pkt.len, timeout_ms) == 0) {
         n = recv_into(ops, h, resp, sizeof(resp), timeout_ms);
         if (n <= 0) {
-           
+            // Retry once in case broker is slow to ACK
             n = recv_into(ops, h, resp, sizeof(resp), timeout_ms);
         }
         uint8_t pub_reason = 0xff;

