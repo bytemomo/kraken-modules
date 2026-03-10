@@ -1,6 +1,6 @@
 # Kraken Module Registry
 
-Secure module registry with cryptographic supply chain verification.
+Secure module registry for ICS/IoT security testing tools with cryptographic supply chain verification.
 
 ## Module Types
 
@@ -15,14 +15,15 @@ Secure module registry with cryptographic supply chain verification.
 ```
 modules/
 ├── abi/
-│   ├── mqtt_auth_check/
-│   ├── cert_inspect/
+│   ├── mqtt_auth_check/    # MQTT authentication checker
+│   ├── cert_inspect/       # TLS certificate inspector
+│   ├── ecat_dos/           # EtherCAT DoS tester
 │   └── ...
 └── container/
-    └── mqtt_boofuzz/
+    └── mqtt_boofuzz/       # MQTT protocol fuzzer
 ```
 
-Each module has a `manifest.yaml`:
+Each module has a `manifest.yaml` validated against [`pages/manifests/schema.yaml`](pages/manifests/schema.yaml):
 
 ```yaml
 id: mqtt_auth_check
@@ -30,31 +31,30 @@ version: 0.1.0
 type: abi
 
 build:
-    system: cmake
-    platforms: [linux-amd64]
+  system: cmake
+  platforms: [linux-amd64]
 
 runtime:
-    protocol: mqtt
-    timeout: 30s
+  protocol: mqtt
+  timeout: 30s
 
 findings:
-    - id: MQTT-ANON
-      severity: high
-      description: Anonymous authentication allowed
+  - id: MQTT-ANON
+    severity: high
+    description: Anonymous authentication allowed
 ```
 
 ## Release
 
-**Manual:** Tag and push
+**Auto:** Push any change under `modules/` to master. The patch version auto-increments (e.g., `0.1.0` → `0.1.1`).
 
-```bash
-git tag mqtt_auth_check-v0.1.0
-git push origin mqtt_auth_check-v0.1.0
-```
+**Minor/Major bump:** Set the version in `manifest.yaml` before pushing (e.g., `0.2.0` or `1.0.0`). Auto-patch continues from there.
 
-**Auto:** Bump version in `manifest.yaml` and push to master.
+**Manual:** Go to Actions → Release Module → Run workflow, enter a module ID or check "Release all".
 
-All releases include Sigstore signatures and SLSA provenance.
+All releases include Sigstore signatures for artifacts, manifests, and the registry index.
+
+See [docs/release-pipeline.md](docs/release-pipeline.md) for architecture details.
 
 ## Verify
 
@@ -88,6 +88,8 @@ cosign verify-blob index.yaml \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp "github.com/bytemomo/kraken-modules"
 ```
+
+See [docs/verification.md](docs/verification.md) for the full trust model.
 
 ## Links
 

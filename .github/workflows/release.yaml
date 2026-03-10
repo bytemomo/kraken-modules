@@ -11,6 +11,17 @@ on:
         description: 'Module ID to release (leave empty for auto-detect)'
         required: false
         type: string
+      release_all:
+        description: 'Release all modules'
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release_all:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -20,33 +31,51 @@ permissions:
   actions: read
 
 jobs:
-  detect-changes:
+  detect-modules:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.detect.outputs.matrix }}
-      has_changes: ${{ steps.detect.outputs.has_changes }}
+      modules: ${{ steps.detect.outputs.modules }}
+      has_modules: ${{ steps.detect.outputs.has_modules }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - name: Detect changed modules
+      - name: Detect modules to release
         id: detect
         run: |
           MODULES="[]"
-          
-          if [ -n "${{ inputs.module_id }}" ]; then
-            # Manual dispatch with specific module
+
+          if [ "${{ inputs.release_all }}" = "true" ]; then
+            for manifest in $(find modules -name "manifest.yaml" | sort); do
+              MODULE_PATH=$(dirname "$manifest")
+              MODULE_ID=$(basename "$MODULE_PATH")
+              VERSION=$(grep "^version:" "$manifest" | awk '{print $2}')
+
+              if [[ "$MODULE_PATH" == modules/abi/* ]]; then
+                MODULE_TYPE="abi"
+              elif [[ "$MODULE_PATH" == modules/container/* ]]; then
+                MODULE_TYPE="container"
+              elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
+                MODULE_TYPE="grpc"
+              else
+                continue
+              fi
+
+              MODULES=$(echo "$MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"module_path\": \"$MODULE_PATH\", \"module_type\": \"$MODULE_TYPE\"}]")
+            done
+
+          elif [ -n "${{ inputs.module_id }}" ]; then
             MODULE_ID="${{ inputs.module_id }}"
             MODULE_PATH=$(find modules -type d -name "$MODULE_ID" | head -1)
-            
+
             if [ -z "$MODULE_PATH" ] || [ ! -f "$MODULE_PATH/manifest.yaml" ]; then
               echo "::error::Module $MODULE_ID not found"
               exit 1
             fi
-            
+
             VERSION=$(grep "^version:" "$MODULE_PATH/manifest.yaml" | awk '{print $2}')
-            
+
             if [[ "$MODULE_PATH" == modules/abi/* ]]; then
               MODULE_TYPE="abi"
             elif [[ "$MODULE_PATH" == modules/container/* ]]; then
@@ -54,17 +83,17 @@ jobs:
             elif [[ "$MODULE_PATH" == modules/grpc/* ]]; then
               MODULE_TYPE="grpc"
             fi
-            
+
             MODULES=$(echo "$MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"module_path\": \"$MODULE_PATH\", \"module_type\": \"$MODULE_TYPE\"}]")
+
           else
-            # Auto-detect from git diff
             CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD | grep "^modules/" | cut -d/ -f1-3 | sort -u)
-            
+
             for MODULE_PATH in $CHANGED_DIRS; do
               if [ -f "$MODULE_PATH/manifest.yaml" ]; then
                 MODULE_ID=$(basename "$MODULE_PATH")
                 VERSION=$(grep "^version:" "$MODULE_PATH/manifest.yaml" | awk '{print $2}')
-                
+
                 if [[ "$MODULE_PATH" == modules/abi/* ]]; then
                   MODULE_TYPE="abi"
                 elif [[ "$MODULE_PATH" == modules/container/* ]]; then
@@ -74,236 +103,28 @@ jobs:
                 else
                   continue
                 fi
-                
+
                 MODULES=$(echo "$MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"module_path\": \"$MODULE_PATH\", \"module_type\": \"$MODULE_TYPE\"}]")
               fi
             done
           fi
-          
-          echo "matrix={\"include\":$MODULES}" >> "$GITHUB_OUTPUT"
-          
+
+          echo "modules=$MODULES" >> "$GITHUB_OUTPUT"
+
           if [ "$MODULES" != "[]" ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "has_modules=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "has_modules=false" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-      fail-fast: false
-    outputs:
-      artifact_name: ${{ steps.build.outputs.artifact_name }}
-      artifact_hash: ${{ steps.build.outputs.artifact_hash }}
-      artifact_hash_base64: ${{ steps.build.outputs.artifact_hash_base64 }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        if: matrix.module_type == 'abi'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Go
-        if: matrix.module_type == 'grpc'
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.23'
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential libssl-dev libmosquitto-dev protobuf-compiler
-
-      - name: Install Go protoc plugins
-        if: matrix.module_type == 'grpc'
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-
-      - name: Build module
-        id: build
-        env:
-          SOURCE_DATE_EPOCH: 0
-          MODULE_PATH: ${{ matrix.module_path }}
-          MODULE_ID: ${{ matrix.module_id }}
-          MODULE_TYPE: ${{ matrix.module_type }}
-        run: |
-          cd "$MODULE_PATH"
-          
-          case "$MODULE_TYPE" in
-            abi)
-              if [ -f "Cargo.toml" ]; then
-                cargo build --release
-                ARTIFACT="target/release/lib${MODULE_ID}.so"
-              elif [ -f "CMakeLists.txt" ]; then
-                mkdir -p build && cd build
-                cmake .. -DCMAKE_BUILD_TYPE=Release
-                make
-                cd ..
-                ARTIFACT=$(find build -name "*.so" | head -1)
-              else
-                echo "::error::Unknown build system"
-                exit 1
-              fi
-              ;;
-            container)
-              ARTIFACT="/tmp/${MODULE_ID}.tar.gz"
-              tar -czf "$ARTIFACT" --exclude='*.tar.gz' .
-              ;;
-            grpc)
-              if [ -f "go.mod" ]; then
-                if [ -f "generate.sh" ]; then
-                  chmod +x generate.sh
-                  ./generate.sh
-                fi
-                CGO_ENABLED=0 go build -ldflags="-s -w" -o "${MODULE_ID}" .
-                ARTIFACT="${MODULE_ID}"
-              elif [ -f "Cargo.toml" ]; then
-                cargo build --release
-                ARTIFACT="target/release/${MODULE_ID}"
-              else
-                echo "::error::Unknown build system for grpc"
-                exit 1
-              fi
-              ;;
-          esac
-          
-          ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
-          cp "$ARTIFACT" "/tmp/${ARTIFACT_NAME}"
-          
-          HASH=$(sha256sum "/tmp/${ARTIFACT_NAME}" | cut -d' ' -f1)
-          HASH_BASE64=$(echo "$HASH  $ARTIFACT_NAME" | base64 -w0)
-          
-          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "artifact_hash=${HASH}" >> "$GITHUB_OUTPUT"
-          echo "artifact_hash_base64=${HASH_BASE64}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute manifest hash
-        id: manifest_hash
-        env:
-          MODULE_PATH: ${{ matrix.module_path }}
-        run: |
-          HASH=$(sha256sum "$MODULE_PATH/manifest.yaml" | cut -d' ' -f1)
-          echo "manifest_hash=${HASH}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: ${{ steps.build.outputs.artifact_name }}
-          path: /tmp/${{ steps.build.outputs.artifact_name }}
-
-      - name: Upload manifest
-        uses: actions/upload-artifact@v5
-        with:
-          name: ${{ matrix.module_id }}-manifest
-          path: ${{ matrix.module_path }}/manifest.yaml
-
-  sign:
-    needs: [detect-changes, build]
-    if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-      fail-fast: false
-    steps:
-      - uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-linux-amd64
-
-      - uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-manifest
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.10.1
-
-      - name: Sign artifact with Sigstore
-        env:
-          ARTIFACT: ${{ matrix.module_id }}-linux-amd64
-        run: |
-          cosign sign-blob "$ARTIFACT" \
-            --yes \
-            --new-bundle-format \
-            --bundle "${ARTIFACT}.sigstore.json"
-
-      - name: Sign manifest with Sigstore
-        run: |
-          cosign sign-blob manifest.yaml \
-            --yes \
-            --new-bundle-format \
-            --bundle "${{ matrix.module_id }}-manifest.sigstore.json"
-
-      - name: Upload artifact signature
-        uses: actions/upload-artifact@v5
-        with:
-          name: ${{ matrix.module_id }}-linux-amd64-sigstore
-          path: ${{ matrix.module_id }}-linux-amd64.sigstore.json
-
-      - name: Upload manifest signature
-        uses: actions/upload-artifact@v5
-        with:
-          name: ${{ matrix.module_id }}-manifest-sigstore
-          path: ${{ matrix.module_id }}-manifest.sigstore.json
-
-  release:
-    needs: [detect-changes, build, sign]
-    if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-linux-amd64
-          path: artifacts
-
-      - name: Download artifact signature
-        uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-linux-amd64-sigstore
-          path: artifacts
-
-      - name: Download manifest
-        uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-manifest
-          path: artifacts
-
-      - name: Download manifest signature
-        uses: actions/download-artifact@v6
-        with:
-          name: ${{ matrix.module_id }}-manifest-sigstore
-          path: artifacts
-
-      - name: Create tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f "${{ matrix.module_id }}-v${{ matrix.version }}"
-          git push origin "${{ matrix.module_id }}-v${{ matrix.version }}" --force
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ matrix.module_id }}-v${{ matrix.version }}
-          files: artifacts/*
-          generate_release_notes: true
-
-  update-index:
-    needs: [detect-changes, build, release]
-    if: needs.detect-changes.outputs.has_changes == 'true'
+  verify:
+    needs: detect-modules
+    if: needs.detect-modules.outputs.has_modules == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -311,24 +132,203 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pyyaml
+        run: pip install pyyaml jsonschema
+
+      - name: Validate all manifests
+        run: python scripts/check_manifest.py
+
+      - name: Run Semgrep
+        uses: docker://semgrep/semgrep:1.150.0
+        with:
+          args: semgrep scan --config .semgrep/rules.yaml --error
+
+  release:
+    needs: [detect-modules, verify]
+    if: needs.detect-modules.outputs.has_modules == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: module-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-build-deps-${{ runner.os }}
+
+      - name: Setup build tools
+        run: |
+          sudo cp -r ~/apt-cache/archives /var/cache/apt/archives 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libssl-dev libmosquitto-dev protobuf-compiler
+          mkdir -p ~/apt-cache
+          sudo cp -r /var/cache/apt/archives ~/apt-cache/
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: modules/abi/cert_inspect
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install Go protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.5
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.10.1
 
-      - name: Update index for changed modules
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install pyyaml
+
+      - name: Build, sign, and release modules
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_DATE_EPOCH: 0
+          MODULES: ${{ needs.detect-modules.outputs.modules }}
         run: |
-          MATRIX='${{ needs.detect-changes.outputs.matrix }}'
-          echo "$MATRIX" | jq -c '.include[]' | while read -r item; do
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          : > /tmp/released_tags.txt
+
+          echo "$MODULES" | jq -c '.[]' | while read -r item; do
             MODULE_ID=$(echo "$item" | jq -r '.module_id')
             VERSION=$(echo "$item" | jq -r '.version')
-            MODULE_TYPE=$(echo "$item" | jq -r '.module_type')
             MODULE_PATH=$(echo "$item" | jq -r '.module_path')
-            ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
+            MODULE_TYPE=$(echo "$item" | jq -r '.module_type')
+            TAG="${MODULE_ID}-v${VERSION}"
 
-            ARTIFACT_HASH=$(curl -sL "https://github.com/${{ github.repository }}/releases/download/${MODULE_ID}-v${VERSION}/${ARTIFACT_NAME}" | sha256sum | cut -d' ' -f1)
+            echo "::group::Processing ${MODULE_ID} v${VERSION}"
+
+            # Auto-bump patch version if this version is already released
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              MAJOR=$(echo "$VERSION" | cut -d. -f1)
+              MINOR=$(echo "$VERSION" | cut -d. -f2)
+              PATCH=$(echo "$VERSION" | cut -d. -f3)
+              PATCH=$((PATCH + 1))
+              VERSION="${MAJOR}.${MINOR}.${PATCH}"
+              TAG="${MODULE_ID}-v${VERSION}"
+
+              # Keep bumping if multiple releases happened
+              while gh release view "$TAG" > /dev/null 2>&1; do
+                PATCH=$((PATCH + 1))
+                VERSION="${MAJOR}.${MINOR}.${PATCH}"
+                TAG="${MODULE_ID}-v${VERSION}"
+              done
+
+              echo "Auto-bumping to ${VERSION}"
+              sed -i "s/^version: .*/version: ${VERSION}/" "$MODULE_PATH/manifest.yaml"
+              git add "$MODULE_PATH/manifest.yaml"
+              git commit -m "Bump ${MODULE_ID} to v${VERSION}"
+            fi
+
+            # Build
+            cd "$MODULE_PATH"
+
+            case "$MODULE_TYPE" in
+              abi)
+                if [ -f "Cargo.toml" ]; then
+                  cargo build --release
+                  ARTIFACT="target/release/lib${MODULE_ID}.so"
+                elif [ -f "CMakeLists.txt" ]; then
+                  mkdir -p build && cd build
+                  cmake .. -DCMAKE_BUILD_TYPE=Release
+                  make
+                  cd ..
+                  ARTIFACT=$(find build -name "*.so" | head -1)
+                else
+                  echo "::error::Unknown build system for ${MODULE_ID}"
+                  exit 1
+                fi
+                ;;
+              container)
+                ARTIFACT="/tmp/${MODULE_ID}.tar.gz"
+                tar -czf "$ARTIFACT" --exclude='*.tar.gz' .
+                ;;
+              grpc)
+                if [ -f "go.mod" ]; then
+                  if [ -f "generate.sh" ]; then
+                    chmod +x generate.sh
+                    ./generate.sh
+                  fi
+                  CGO_ENABLED=0 go build -ldflags="-s -w" -o "${MODULE_ID}" .
+                  ARTIFACT="${MODULE_ID}"
+                elif [ -f "Cargo.toml" ]; then
+                  cargo build --release
+                  ARTIFACT="target/release/${MODULE_ID}"
+                else
+                  echo "::error::Unknown build system for grpc ${MODULE_ID}"
+                  exit 1
+                fi
+                ;;
+            esac
+
+            ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
+            cp "$ARTIFACT" "/tmp/${ARTIFACT_NAME}"
+
+            cd "$GITHUB_WORKSPACE"
+
+            # Hashes
+            ARTIFACT_HASH=$(sha256sum "/tmp/${ARTIFACT_NAME}" | cut -d' ' -f1)
             MANIFEST_HASH=$(sha256sum "$MODULE_PATH/manifest.yaml" | cut -d' ' -f1)
 
+            # Sign artifact (with retry)
+            for i in 1 2 3; do
+              cosign sign-blob "/tmp/${ARTIFACT_NAME}" \
+                --yes \
+                --new-bundle-format \
+                --bundle "/tmp/${ARTIFACT_NAME}.sigstore.json" \
+                && break
+              echo "Cosign attempt $i failed, retrying in 10s..."
+              sleep 10
+            done
+
+            # Sign manifest (with retry)
+            for i in 1 2 3; do
+              cosign sign-blob "$MODULE_PATH/manifest.yaml" \
+                --yes \
+                --new-bundle-format \
+                --bundle "/tmp/${MODULE_ID}-manifest.sigstore.json" \
+                && break
+              echo "Cosign attempt $i failed, retrying in 10s..."
+              sleep 10
+            done
+
+            # Tag and release
+            git tag -f "$TAG"
+            git push origin "$TAG" --force
+
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            gh release create "$TAG" \
+              "/tmp/${ARTIFACT_NAME}" \
+              "/tmp/${ARTIFACT_NAME}.sigstore.json" \
+              "$MODULE_PATH/manifest.yaml" \
+              "/tmp/${MODULE_ID}-manifest.sigstore.json" \
+              --title "${MODULE_ID} v${VERSION}" \
+              --generate-notes
+
+            echo "$TAG" >> /tmp/released_tags.txt
+
+            # Update index
             python scripts/update_index.py \
               --module-id "$MODULE_ID" \
               --version "$VERSION" \
@@ -338,29 +338,50 @@ jobs:
               --manifest-hash "$MANIFEST_HASH"
 
             cp "$MODULE_PATH/manifest.yaml" "pages/manifests/${MODULE_ID}.yaml"
+
+            echo "::endgroup::"
           done
 
       - name: Sign index with Sigstore
         run: |
-          cosign sign-blob pages/index.yaml \
-            --yes \
-            --new-bundle-format \
-            --bundle pages/index.sigstore.json
+          for i in 1 2 3; do
+            cosign sign-blob pages/index.yaml \
+              --yes \
+              --new-bundle-format \
+              --bundle pages/index.sigstore.json \
+              && break
+            echo "Cosign attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
 
       - name: Commit and push
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pages/index.yaml pages/index.sigstore.json pages/manifests/
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Update index for changed modules"
+          git diff --cached --quiet || git commit -m "Update index for changed modules"
           git pull --rebase origin master
           git push
 
+      - name: Cleanup on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/released_tags.txt ]; then
+            echo "Cleaning up released tags and releases..."
+            while read -r TAG; do
+              echo "Deleting release and tag: $TAG"
+              gh release delete "$TAG" --yes 2>/dev/null || true
+              git push origin --delete "$TAG" 2>/dev/null || true
+            done < /tmp/released_tags.txt
+          fi
+
   deploy-pages:
-    needs: [detect-changes, update-index]
-    if: needs.detect-changes.outputs.has_changes == 'true'
+    needs: [detect-modules, release]
+    if: needs.detect-modules.outputs.has_modules == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -383,46 +404,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-  rollback:
-    needs: [detect-changes, release, update-index, deploy-pages]
-    if: >-
-      always() &&
-      needs.detect-changes.result == 'success' &&
-      (needs.release.result == 'failure' ||
-       needs.update-index.result == 'failure' ||
-       needs.deploy-pages.result == 'failure')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          fetch-depth: 5
-
-      - name: Revert index commit if pushed
-        if: needs.update-index.result == 'success'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull origin master
-          LAST_MSG=$(git log -1 --pretty=%s)
-          if [ "$LAST_MSG" = "Update index for changed modules" ]; then
-            git revert --no-edit HEAD
-            git push
-            echo "Reverted index commit"
-          fi
-
-      - name: Delete releases and tags
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MATRIX: ${{ needs.detect-changes.outputs.matrix }}
-        run: |
-          echo "$MATRIX" | jq -c '.include[]' | while read -r item; do
-            MODULE_ID=$(echo "$item" | jq -r '.module_id')
-            VERSION=$(echo "$item" | jq -r '.version')
-            TAG="${MODULE_ID}-v${VERSION}"
-            echo "Rolling back ${TAG}..."
-            gh release delete "$TAG" --yes 2>/dev/null || true
-            git push origin --delete "$TAG" 2>/dev/null || true
-          done
-          echo "::warning::Rollback complete. All releases and tags deleted."

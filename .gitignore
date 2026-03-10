@@ -20,6 +20,8 @@
 
 # Allow docs
 !README.md
+!docs/
+!docs/**
 
 # Ignore build artifacts in allowed dirs
 **/__pycache__/
