@@ -1,5 +1,5 @@
 id: tls_version_check
-version: 0.1.0
+version: 0.1.1
 type: abi
 description: |
   Summarizes which TLS protocol versions a server accepts by attempting handshakes
