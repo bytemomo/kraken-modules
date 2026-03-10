@@ -160,13 +160,22 @@ jobs:
               --title "${MODULE_ID} v${VERSION}" \
               --generate-notes
 
+            echo "$TAG" >> /tmp/released_tags.txt
             RELEASED_MODULES=$(echo "$RELEASED_MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"type\": \"$MODULE_TYPE\", \"artifact\": \"$ARTIFACT_NAME\", \"hash\": \"$HASH\", \"manifest_hash\": \"$MANIFEST_HASH\"}]")
-            
+
             cd "$GITHUB_WORKSPACE"
             echo "::endgroup::"
           done
-          
+
           echo "released_modules=${RELEASED_MODULES}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload rollback manifest
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: released-tags
+          path: /tmp/released_tags.txt
+          if-no-files-found: ignore
 
   update-index:
     needs: build-sign-release
@@ -258,3 +267,52 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  rollback:
+    needs: [build-sign-release, update-index, deploy-pages]
+    if: >-
+      always() &&
+      (needs.build-sign-release.result == 'failure' ||
+       needs.update-index.result == 'failure' ||
+       needs.deploy-pages.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 5
+
+      - name: Download rollback manifest
+        uses: actions/download-artifact@v6
+        with:
+          name: released-tags
+          path: /tmp
+        continue-on-error: true
+
+      - name: Revert index commit if pushed
+        if: needs.update-index.result == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin master
+          LAST_MSG=$(git log -1 --pretty=%s)
+          if [ "$LAST_MSG" = "Update index: release-all" ]; then
+            git revert --no-edit HEAD
+            git push
+            echo "Reverted index commit"
+          fi
+
+      - name: Delete releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f /tmp/released_tags.txt ]; then
+            echo "No releases to roll back"
+            exit 0
+          fi
+          while read -r TAG; do
+            echo "Rolling back ${TAG}..."
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            git push origin --delete "$TAG" 2>/dev/null || true
+          done < /tmp/released_tags.txt
+          echo "::warning::Rollback complete. All releases and tags deleted."

@@ -383,3 +383,46 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  rollback:
+    needs: [detect-changes, release, update-index, deploy-pages]
+    if: >-
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      (needs.release.result == 'failure' ||
+       needs.update-index.result == 'failure' ||
+       needs.deploy-pages.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 5
+
+      - name: Revert index commit if pushed
+        if: needs.update-index.result == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin master
+          LAST_MSG=$(git log -1 --pretty=%s)
+          if [ "$LAST_MSG" = "Update index for changed modules" ]; then
+            git revert --no-edit HEAD
+            git push
+            echo "Reverted index commit"
+          fi
+
+      - name: Delete releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.detect-changes.outputs.matrix }}
+        run: |
+          echo "$MATRIX" | jq -c '.include[]' | while read -r item; do
+            MODULE_ID=$(echo "$item" | jq -r '.module_id')
+            VERSION=$(echo "$item" | jq -r '.version')
+            TAG="${MODULE_ID}-v${VERSION}"
+            echo "Rolling back ${TAG}..."
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            git push origin --delete "$TAG" 2>/dev/null || true
+          done
+          echo "::warning::Rollback complete. All releases and tags deleted."
