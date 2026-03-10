@@ -351,9 +351,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin master
           git add pages/index.yaml pages/index.sigstore.json pages/manifests/
-          git commit -m "Update index for changed modules" || true
-          git push || true
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Update index for changed modules"
+          git push
 
   deploy-pages:
     needs: [detect-changes, update-index]
