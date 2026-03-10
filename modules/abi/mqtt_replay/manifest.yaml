@@ -1,5 +1,5 @@
 id: mqtt_replay
-version: 0.1.0
+version: 0.1.1
 type: abi
 description: |
   Replays fixed MQTT packet sequences to reproduce known bugs. Takes a hex-encoded
