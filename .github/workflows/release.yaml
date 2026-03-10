@@ -181,11 +181,25 @@ jobs:
           echo "artifact_hash=${HASH}" >> "$GITHUB_OUTPUT"
           echo "artifact_hash_base64=${HASH_BASE64}" >> "$GITHUB_OUTPUT"
 
+      - name: Compute manifest hash
+        id: manifest_hash
+        env:
+          MODULE_PATH: ${{ matrix.module_path }}
+        run: |
+          HASH=$(sha256sum "$MODULE_PATH/manifest.yaml" | cut -d' ' -f1)
+          echo "manifest_hash=${HASH}" >> "$GITHUB_OUTPUT"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.build.outputs.artifact_name }}
           path: /tmp/${{ steps.build.outputs.artifact_name }}
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.module_id }}-manifest
+          path: ${{ matrix.module_path }}/manifest.yaml
 
   sign:
     needs: [detect-changes, build]
@@ -199,10 +213,14 @@ jobs:
         with:
           name: ${{ matrix.module_id }}-linux-amd64
 
+      - uses: actions/download-artifact@v6
+        with:
+          name: ${{ matrix.module_id }}-manifest
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.10.1
 
-      - name: Sign with Sigstore
+      - name: Sign artifact with Sigstore
         env:
           ARTIFACT: ${{ matrix.module_id }}-linux-amd64
         run: |
@@ -211,11 +229,24 @@ jobs:
             --new-bundle-format \
             --bundle "${ARTIFACT}.sigstore.json"
 
-      - name: Upload signatures
+      - name: Sign manifest with Sigstore
+        run: |
+          cosign sign-blob manifest.yaml \
+            --yes \
+            --new-bundle-format \
+            --bundle "${{ matrix.module_id }}-manifest.sigstore.json"
+
+      - name: Upload artifact signature
         uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.module_id }}-linux-amd64-sigstore
           path: ${{ matrix.module_id }}-linux-amd64.sigstore.json
+
+      - name: Upload manifest signature
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.module_id }}-manifest-sigstore
+          path: ${{ matrix.module_id }}-manifest.sigstore.json
 
   release:
     needs: [detect-changes, build, sign]
@@ -233,10 +264,22 @@ jobs:
           name: ${{ matrix.module_id }}-linux-amd64
           path: artifacts
 
-      - name: Download signatures
+      - name: Download artifact signature
         uses: actions/download-artifact@v6
         with:
           name: ${{ matrix.module_id }}-linux-amd64-sigstore
+          path: artifacts
+
+      - name: Download manifest
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ matrix.module_id }}-manifest
+          path: artifacts
+
+      - name: Download manifest signature
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ matrix.module_id }}-manifest-sigstore
           path: artifacts
 
       - name: Create tag
@@ -270,6 +313,9 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.10.1
+
       - name: Update index for changed modules
         run: |
           MATRIX='${{ needs.detect-changes.outputs.matrix }}'
@@ -279,24 +325,33 @@ jobs:
             MODULE_TYPE=$(echo "$item" | jq -r '.module_type')
             MODULE_PATH=$(echo "$item" | jq -r '.module_path')
             ARTIFACT_NAME="${MODULE_ID}-linux-amd64"
-            
+
             ARTIFACT_HASH=$(curl -sL "https://github.com/${{ github.repository }}/releases/download/${MODULE_ID}-v${VERSION}/${ARTIFACT_NAME}" | sha256sum | cut -d' ' -f1)
-            
+            MANIFEST_HASH=$(sha256sum "$MODULE_PATH/manifest.yaml" | cut -d' ' -f1)
+
             python scripts/update_index.py \
               --module-id "$MODULE_ID" \
               --version "$VERSION" \
               --module-type "$MODULE_TYPE" \
               --artifact-name "$ARTIFACT_NAME" \
-              --artifact-hash "$ARTIFACT_HASH"
-            
+              --artifact-hash "$ARTIFACT_HASH" \
+              --manifest-hash "$MANIFEST_HASH"
+
             cp "$MODULE_PATH/manifest.yaml" "pages/manifests/${MODULE_ID}.yaml"
           done
+
+      - name: Sign index with Sigstore
+        run: |
+          cosign sign-blob pages/index.yaml \
+            --yes \
+            --new-bundle-format \
+            --bundle pages/index.sigstore.json
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pages/index.yaml pages/manifests/
+          git add pages/index.yaml pages/index.sigstore.json pages/manifests/
           git commit -m "Update index for changed modules" || true
           git push || true
 

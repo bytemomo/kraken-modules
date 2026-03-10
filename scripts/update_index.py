@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--module-type", required=True, choices=["abi", "container", "grpc"])
     parser.add_argument("--artifact-name", required=True)
     parser.add_argument("--artifact-hash", required=True)
+    parser.add_argument("--manifest-hash", required=True)
     parser.add_argument("--index-path", default="pages/index.yaml")
     args = parser.parse_args()
 
@@ -37,6 +38,11 @@ def main():
     tag = f"{args.module_id}-v{args.version}"
     module["versions"][args.version] = {
         "tag": tag,
+        "manifest": {
+            "file": "manifest.yaml",
+            "sha256": args.manifest_hash,
+            "bundle": f"{args.module_id}-manifest.sigstore.json",
+        },
         "artifacts": {
             "linux-amd64": {
                 "file": args.artifact_name,

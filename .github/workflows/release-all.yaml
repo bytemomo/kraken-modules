@@ -136,22 +136,31 @@ jobs:
             
             HASH=$(sha256sum "/tmp/${ARTIFACT_NAME}" | cut -d' ' -f1)
             
+            MANIFEST_HASH=$(sha256sum "$GITHUB_WORKSPACE/$MODULE_PATH/manifest.yaml" | cut -d' ' -f1)
+
             cosign sign-blob "/tmp/${ARTIFACT_NAME}" \
               --yes \
               --new-bundle-format \
               --bundle "/tmp/${ARTIFACT_NAME}.sigstore.json"
-            
+
+            cosign sign-blob "$GITHUB_WORKSPACE/$MODULE_PATH/manifest.yaml" \
+              --yes \
+              --new-bundle-format \
+              --bundle "/tmp/${MODULE_ID}-manifest.sigstore.json"
+
             git tag -f "$TAG"
             git push origin "$TAG" --force
-            
+
             gh release delete "$TAG" --yes 2>/dev/null || true
             gh release create "$TAG" \
               "/tmp/${ARTIFACT_NAME}" \
               "/tmp/${ARTIFACT_NAME}.sigstore.json" \
+              "$GITHUB_WORKSPACE/$MODULE_PATH/manifest.yaml" \
+              "/tmp/${MODULE_ID}-manifest.sigstore.json" \
               --title "${MODULE_ID} v${VERSION}" \
               --generate-notes
-            
-            RELEASED_MODULES=$(echo "$RELEASED_MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"type\": \"$MODULE_TYPE\", \"artifact\": \"$ARTIFACT_NAME\", \"hash\": \"$HASH\"}]")
+
+            RELEASED_MODULES=$(echo "$RELEASED_MODULES" | jq -c ". + [{\"module_id\": \"$MODULE_ID\", \"version\": \"$VERSION\", \"type\": \"$MODULE_TYPE\", \"artifact\": \"$ARTIFACT_NAME\", \"hash\": \"$HASH\", \"manifest_hash\": \"$MANIFEST_HASH\"}]")
             
             cd "$GITHUB_WORKSPACE"
             echo "::endgroup::"
@@ -175,6 +184,9 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.10.1
+
       - name: Update index for all modules
         env:
           RELEASED_MODULES: ${{ needs.build-sign-release.outputs.released_modules }}
@@ -185,13 +197,15 @@ jobs:
             MODULE_TYPE=$(echo "$item" | jq -r '.type')
             ARTIFACT_NAME=$(echo "$item" | jq -r '.artifact')
             ARTIFACT_HASH=$(echo "$item" | jq -r '.hash')
-            
+            MANIFEST_HASH=$(echo "$item" | jq -r '.manifest_hash')
+
             python scripts/update_index.py \
               --module-id "$MODULE_ID" \
               --version "$VERSION" \
               --module-type "$MODULE_TYPE" \
               --artifact-name "$ARTIFACT_NAME" \
-              --artifact-hash "$ARTIFACT_HASH"
+              --artifact-hash "$ARTIFACT_HASH" \
+              --manifest-hash "$MANIFEST_HASH"
           done
 
       - name: Copy all manifests to pages
@@ -202,11 +216,18 @@ jobs:
             cp "$manifest" "pages/manifests/${MODULE_ID}.yaml"
           done
 
+      - name: Sign index with Sigstore
+        run: |
+          cosign sign-blob pages/index.yaml \
+            --yes \
+            --new-bundle-format \
+            --bundle pages/index.sigstore.json
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pages/index.yaml pages/manifests/
+          git add pages/index.yaml pages/index.sigstore.json pages/manifests/
           git commit -m "Update index: release-all" || true
           git push || true
 

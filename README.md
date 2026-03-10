@@ -58,10 +58,33 @@ All releases include Sigstore signatures and SLSA provenance.
 
 ## Verify
 
+### Full verification (recommended)
+
 ```bash
+./scripts/verify_module.sh mqtt_auth_check        # latest version
+./scripts/verify_module.sh cert_inspect 0.1.0     # specific version
+```
+
+This checks: index signature, artifact hash + signature, manifest hash + signature.
+
+### Manual verification
+
+```bash
+# Verify artifact
 cosign verify-blob <artifact> \
-  --signature <artifact>.sig \
-  --certificate <artifact>.crt \
+  --bundle <artifact>.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "github.com/bytemomo/kraken-modules"
+
+# Verify manifest
+cosign verify-blob manifest.yaml \
+  --bundle <module_id>-manifest.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp "github.com/bytemomo/kraken-modules"
+
+# Verify index
+cosign verify-blob index.yaml \
+  --bundle index.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp "github.com/bytemomo/kraken-modules"
 ```
