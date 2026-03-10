@@ -1,5 +1,165 @@
 version: 1
-generated: null
+generated: '2026-03-10T08:59:46.891494+00:00'
 registry_url: https://bytemomo.github.io/kraken-modules
 releases_url: https://github.com/bytemomo/kraken-modules/releases/download
-modules: {}
+modules:
+  cert_inspect:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/cert_inspect.yaml
+    versions:
+      0.1.0:
+        tag: cert_inspect-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 5a9906d4990a2da334947360d04b1a9c9c6d568e6ce7c4d8e3b4782a13d8f539
+          bundle: cert_inspect-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: cert_inspect-linux-amd64
+            sha256: 74bbd6b2fe0f5b8a55c84f7a04923342faa8946d01c6d055b8c8c6d8cee22fe6
+            bundle: cert_inspect-linux-amd64.sigstore.json
+  ecat_dos:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/ecat_dos.yaml
+    versions:
+      0.1.0:
+        tag: ecat_dos-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 55c357c6dfe2e9a896ab9430e12efb77b6523d1899b656fc84afeb55d5c1e6fb
+          bundle: ecat_dos-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: ecat_dos-linux-amd64
+            sha256: 3ab408dc23ec8f253a5c03778f468496ea21004c48a300a262f26ce523ca6002
+            bundle: ecat_dos-linux-amd64.sigstore.json
+  ecat_inject:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/ecat_inject.yaml
+    versions:
+      0.1.0:
+        tag: ecat_inject-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 4b9e53e8a8cc2446821f1530c242bb872233053bdd9cbea1462aa0a8747faaee
+          bundle: ecat_inject-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: ecat_inject-linux-amd64
+            sha256: 51469961126c5ad68a848b78baec0f03715391c653dc90644e12f0dbcb94d7a9
+            bundle: ecat_inject-linux-amd64.sigstore.json
+  ecat_mitm:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/ecat_mitm.yaml
+    versions:
+      0.1.0:
+        tag: ecat_mitm-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 9cf32e455d6abf16d54d3ee3abef6189f18fa4c6d5a3b2c778045a39c74460d2
+          bundle: ecat_mitm-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: ecat_mitm-linux-amd64
+            sha256: 8d3089a291761f6b0f7a1a82e00bed1f8d95fd1ef3d8f2ae2c78a0c1270a5835
+            bundle: ecat_mitm-linux-amd64.sigstore.json
+  mqtt_acl_probe:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/mqtt_acl_probe.yaml
+    versions:
+      0.1.0:
+        tag: mqtt_acl_probe-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 7ad8a2e00fd574abd2d2c8710de4d9da07c3931d566f8a40979de36c22b4998a
+          bundle: mqtt_acl_probe-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: mqtt_acl_probe-linux-amd64
+            sha256: ceb6808a30d7bc1bd55faf377439fe7978dc516fdd29a926267c35fb78553433
+            bundle: mqtt_acl_probe-linux-amd64.sigstore.json
+  mqtt_auth_check:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/mqtt_auth_check.yaml
+    versions:
+      0.1.0:
+        tag: mqtt_auth_check-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 5eb4d8d4be37698729af35e2f9b4d467cc745d624d4e50b240bd7e0ad36f52c0
+          bundle: mqtt_auth_check-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: mqtt_auth_check-linux-amd64
+            sha256: 4d34f8301f6d16f716624daa98c58c2ab2ef248508689909927484047bc99c16
+            bundle: mqtt_auth_check-linux-amd64.sigstore.json
+  mqtt_replay:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/mqtt_replay.yaml
+    versions:
+      0.1.0:
+        tag: mqtt_replay-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 2f857b2dfb50a10fa2861c6f70daf6109171f0c88aeb7c34e1a969f8d6cd6153
+          bundle: mqtt_replay-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: mqtt_replay-linux-amd64
+            sha256: 70f862cec04b50427437a43495e61d194b81dd7328566e51cd7df9e64a3ef0b7
+            bundle: mqtt_replay-linux-amd64.sigstore.json
+  mqtt_sys_disclosure:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/mqtt_sys_disclosure.yaml
+    versions:
+      0.1.0:
+        tag: mqtt_sys_disclosure-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 8aca70ebe29841dececa2ca9711f4385d320215497d3c1c7975dc0af0eab3250
+          bundle: mqtt_sys_disclosure-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: mqtt_sys_disclosure-linux-amd64
+            sha256: c8b53bdff0f1c6b29b4bbace05bebb3a9cec76d792b7bd2dbd55b20eef887223
+            bundle: mqtt_sys_disclosure-linux-amd64.sigstore.json
+  tls_version_check:
+    type: abi
+    latest: 0.1.0
+    manifest_url: manifests/tls_version_check.yaml
+    versions:
+      0.1.0:
+        tag: tls_version_check-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: f963f573ea08b885f777aa05271a801a1f42030f814025b1c30b8b4bd94e5e1c
+          bundle: tls_version_check-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: tls_version_check-linux-amd64
+            sha256: 685dbdfa132784656c59acf9d2cc468756d2bf0e0c9b8dfce98701fb64e71d2a
+            bundle: tls_version_check-linux-amd64.sigstore.json
+  mqtt_boofuzz:
+    type: container
+    latest: 0.1.0
+    manifest_url: manifests/mqtt_boofuzz.yaml
+    versions:
+      0.1.0:
+        tag: mqtt_boofuzz-v0.1.0
+        manifest:
+          file: manifest.yaml
+          sha256: 670518b0bdc20d2f4922856b883caa80f28baf5c4455418d63c84915c103e37f
+          bundle: mqtt_boofuzz-manifest.sigstore.json
+        artifacts:
+          linux-amd64:
+            file: mqtt_boofuzz-linux-amd64
+            sha256: 6d34c67e55dc5cb6c7851868ac20220375104521d1ad1a6009ad64462dd5def4
+            bundle: mqtt_boofuzz-linux-amd64.sigstore.json
