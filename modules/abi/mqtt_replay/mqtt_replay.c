@@ -19,6 +19,9 @@
 
 KRAKEN_API const uint32_t KRAKEN_MODULE_ABI_VERSION = KRAKEN_ABI_VERSION;
 
+/* ------------------------------------------------------------------ */
+/* Core Logic                                                         */
+/* ------------------------------------------------------------------ */
 
 typedef enum {
     INVALID = 0,
@@ -118,6 +121,7 @@ static MqttPacketType mqtt_packet_type_from_string(const char *str) {
     return INVALID;
 }
 
+// Decode %x00 format to bytes
 uint8_t *decode_packet_data_from_hex_percent(const char *hex_str, size_t *out_len) {
     size_t len = strlen(hex_str);
 
@@ -143,7 +147,7 @@ uint8_t *decode_packet_data_from_hex_percent(const char *hex_str, size_t *out_le
     return buffer;
 }
 
-static int read_file(const char *file_path, mqtt_packet packet_list[MAX_PACKETS], size_t *packet_count) {
+static int read_file(const char *file_path, mqtt_packet *packet_list, size_t *packet_count) {
     FILE *fp = fopen(file_path, "r");
     if (!fp) {
         perror("fopen");
@@ -151,12 +155,15 @@ static int read_file(const char *file_path, mqtt_packet packet_list[MAX_PACKETS]
     }
 
     char line_type[64];
-    char line_data[90000];
+    char *line_data = (char *)malloc(90000);
+    if (!line_data) {
+        fclose(fp);
+        return 1;
+    }
     size_t count = 0;
 
-    while (fgets(line_type, sizeof(line_type), fp) && fgets(line_data, sizeof(line_data), fp)) {
+    while (fgets(line_type, sizeof(line_type), fp) && fgets(line_data, 90000, fp)) {
         if (count >= MAX_PACKETS) {
-           
             break;
         }
 
@@ -184,8 +191,6 @@ static int read_file(const char *file_path, mqtt_packet packet_list[MAX_PACKETS]
             decoded_len = MAX_PACKET_SIZE;
         }
 
-       
-
         memcpy(packet_list[count].data, decoded, decoded_len);
         packet_list[count].data_len = decoded_len;
 
@@ -194,6 +199,7 @@ static int read_file(const char *file_path, mqtt_packet packet_list[MAX_PACKETS]
         count++;
     }
 
+    free(line_data);
     fclose(fp);
     *packet_count = count;
     return 0;
@@ -209,7 +215,7 @@ int send_packet(int sock, mqtt_packet *p) {
 }
 
 int read_mqtt_response(int sock) {
-    uint8_t header[5];
+    uint8_t header[5]; // max header size
     ssize_t r = recv(sock, header, 1, 0);
     if (r <= 0)
         return -1;
@@ -244,6 +250,7 @@ typedef struct {
     int done;
 } connection_info;
 
+/* Connection state - passed through replay context to avoid global state */
 typedef struct {
     connection_info connections[MAX_CONNECTIONS];
     size_t connection_count;
@@ -303,11 +310,11 @@ int replay_packets(const char *broker_ip, uint16_t broker_port, mqtt_packet pack
 
         ssize_t sent = send(current_sock, p->data, p->data_len, 0);
         if (sent != (ssize_t)p->data_len) {
-           
+            // Send failed but continue with remaining packets
         }
     }
 
-   
+    // Join threads and close sockets
     for (size_t i = 0; i < ctx.connection_count; i++) {
         pthread_mutex_lock(&ctx.done_mutex);
         ctx.connections[i].done = 1;
@@ -335,7 +342,7 @@ int heartbeat(const char *broker_ip, uint16_t broker_port) {
     struct addrinfo *res = NULL;
     int gai = getaddrinfo(broker_ip, port_buf, &hints, &res);
     if (gai != 0) {
-       
+        // fprintf(stderr, "getaddrinfo(%s:%s) failed: %s\n", broker_ip, port_buf, gai_strerror(gai));
         return 1;
     }
 
@@ -367,9 +374,12 @@ int heartbeat(const char *broker_ip, uint16_t broker_port) {
     return status;
 }
 
+/* ------------------------------------------------------------------ */
+/* Entrypoint                                                         */
+/* ------------------------------------------------------------------ */
 
 KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, const char *params_json, KrakenRunResult **out_result) {
-   
+    // 1. Allocate and initialize the main result structure
     KrakenRunResult *result = (KrakenRunResult *)calloc(1, sizeof(KrakenRunResult));
     if (!result)
         return -1;
@@ -377,7 +387,7 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
     result->target.host = mystrdup(host);
     result->target.port = (uint16_t)port;
 
-   
+    // 2. Perform MQTT checks
     char *sequence_num = json_extract_string(params_json, "sequence_num");
     int seq_num = 0;
     if (sequence_num && *sequence_num) {
@@ -400,7 +410,7 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
             continue;
         }
 
-       
+        // Extract filename from path for finding title (strip directory and extension)
         const char *filename = strrchr(path, '/');
         filename = filename ? filename + 1 : path;
         char title[256] = {0};
@@ -409,37 +419,46 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
         if (name_len > sizeof(title) - 1) name_len = sizeof(title) - 1;
         strncpy(title, filename, name_len);
 
-        {
-            mqtt_packet packets[MAX_PACKETS];
+        { // Replay main code
+            mqtt_packet *packets = (mqtt_packet *)calloc(MAX_PACKETS, sizeof(mqtt_packet));
+            if (!packets) {
+                add_log(result, "Failed to allocate packet buffer");
+                free(path);
+                continue;
+            }
             size_t packet_count = 0;
 
             if (read_file(path, packets, &packet_count) != 0) {
                 add_log(result, "Failed to read packet file");
+                free(packets);
                 free(path);
                 continue;
             }
 
             if (replay_packets(host, port, packets, packet_count) != 0) {
                 add_log(result, "Failed to connect for packet replay");
+                free(packets);
                 free(path);
                 continue;
             }
+            free(packets);
             usleep(1000);
 
             if (heartbeat(host, port)) {
                 is_successfull = true;
-               
-                break;
+                // If broker is not reachable after replay, it crashed
             }
         }
 
         KrakenFinding f = {0};
-        f.id = mystrdup("");
-        f.module_id = mystrdup("MQTT-REPLAY");
+        f.id = mystrdup(title);  // Use filename (e.g., CVE-2024-8376) as finding ID
+        f.module_id = mystrdup("mqtt-replay");
         f.success = is_successfull;
         f.title = mystrdup(title);
-        f.severity = mystrdup("high");
-        f.description = mystrdup("The broker crashed or became unreachable after replaying malformed MQTT packets");
+        f.severity = is_successfull ? mystrdup("critical") : mystrdup("info");
+        f.description = is_successfull
+            ? mystrdup("The broker crashed or became unreachable after replaying malformed MQTT packets")
+            : mystrdup("The broker remained reachable after replaying the packet sequence");
         f.timestamp = ts;
         f.target.host = mystrdup(host);
         f.target.port = port;
@@ -447,11 +466,16 @@ KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, 
         f.tags.count = 2;
         f.tags.strings = (const char **)malloc(2 * sizeof(char *));
         f.tags.strings[0] = mystrdup("mqtt");
-        f.tags.strings[1] = mystrdup(title);
+        f.tags.strings[1] = mystrdup("replay");
 
         free(path);
 
         add_finding(result, &f);
+
+        // If broker crashed, stop testing further sequences
+        if (is_successfull) {
+            break;
+        }
     }
 
     *out_result = result;

@@ -15,6 +15,7 @@ from boofuzz.utils.process_monitor_local import ProcessMonitorLocal
 
 OUTDIR: str = "boofuzz-results"
 MODULE_ID = "mqtt-boofuzz"
+DEFAULT_MAX_ITERATIONS = 1000000
 
 
 def build_run_result(
@@ -57,65 +58,131 @@ def build_finding(
     }
 
 
-def extract_findings_from_db(db_path: str, host: str, port: int) -> tuple[list[dict], list[str]]:
-    """Extract crash/failure findings from boofuzz session database."""
+def extract_findings_from_db(db_path: str, host: str, port: int) -> tuple[list[dict], list[str], dict]:
+    """Extract crash/failure findings and stats from boofuzz session database."""
     findings = []
     logs = []
+    stats = {"total_cases": 0, "failed_cases": 0}
 
     if not os.path.exists(db_path):
         logs.append(f"Session database not found: {db_path}")
-        return findings, logs
+        return findings, logs, stats
 
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        # Get failed test case indices
         cursor.execute("""
-            SELECT id, name, index_start, index_end
-            FROM cases
-            WHERE id IN (SELECT DISTINCT case_id FROM steps WHERE type = 'fail')
+            SELECT DISTINCT test_case_index FROM steps WHERE type = 'fail'
         """)
-        failed_cases = cursor.fetchall()
+        failed_indices = [row[0] for row in cursor.fetchall()]
 
-        for case_id, case_name, idx_start, idx_end in failed_cases:
+        # Get case info for failed cases
+        for case_idx in failed_indices:
+            cursor.execute("""
+                SELECT name, number, timestamp FROM cases WHERE number = ?
+            """, (case_idx,))
+            case_row = cursor.fetchone()
+            case_name = case_row[0] if case_row else "unknown"
+            case_number = case_row[1] if case_row else case_idx
+            case_ts = case_row[2] if case_row else None
+
+            # Get failure details
             cursor.execute("""
                 SELECT description, timestamp
                 FROM steps
-                WHERE case_id = ? AND type = 'fail'
+                WHERE test_case_index = ? AND type = 'fail'
                 ORDER BY timestamp
-            """, (case_id,))
+            """, (case_idx,))
             failures = cursor.fetchall()
 
             for desc, ts in failures:
                 finding = build_finding(
-                    finding_id=f"FUZZ-FAIL-{case_id}",
+                    finding_id="mqtt-boofuzz-crash",
                     success=True,
-                    title=f"Fuzzing failure in {case_name or 'unknown'}",
-                    severity="medium",
+                    title=f"Fuzzing crash/failure in {case_name}",
+                    severity="high",
                     description=desc or "Test case triggered a failure condition",
                     evidence={
-                        "case_id": case_id,
+                        "case_number": case_number,
                         "case_name": case_name,
-                        "test_index_start": idx_start,
-                        "test_index_end": idx_end,
-                        "timestamp": ts,
+                        "timestamp": ts or case_ts,
                     },
-                    tags=["fuzzing", "mqtt", "failure"],
+                    tags=["fuzzing", "mqtt", "crash"],
                     host=host,
                     port=port,
                 )
                 findings.append(finding)
 
+        # Get total stats
         cursor.execute("SELECT COUNT(*) FROM cases")
         total_cases = cursor.fetchone()[0]
+        stats["total_cases"] = total_cases
+        stats["failed_cases"] = len(failed_indices)
         logs.append(f"Total test cases executed: {total_cases}")
-        logs.append(f"Failed/crashed cases: {len(failed_cases)}")
+        logs.append(f"Failed/crashed cases: {len(failed_indices)}")
 
         conn.close()
     except sqlite3.Error as e:
         logs.append(f"Error reading session database: {e}")
 
-    return findings, logs
+    return findings, logs, stats
+
+
+def get_fsm_stats(session) -> dict:
+    """Extract FSM statistics from the boofuzz session."""
+    num_nodes = 0
+    num_edges = 0
+    adjacency = {}
+
+    try:
+        # Access the internal graph structure from boofuzz Session
+        if hasattr(session, 'edges') and hasattr(session, 'nodes'):
+            num_nodes = len(session.nodes)
+            num_edges = len(session.edges)
+
+            # Build adjacency for depth calculation
+            for edge in session.edges.values():
+                src = edge.src.name if hasattr(edge.src, 'name') else str(edge.src)
+                dst = edge.dst.name if hasattr(edge.dst, 'name') else str(edge.dst)
+                if src not in adjacency:
+                    adjacency[src] = []
+                adjacency[src].append(dst)
+    except Exception:
+        pass
+
+    # Find root nodes (nodes with no incoming edges)
+    all_dsts = set()
+    for dsts in adjacency.values():
+        all_dsts.update(dsts)
+    roots = set(adjacency.keys()) - all_dsts
+    if not roots and adjacency:
+        roots = set(adjacency.keys())
+
+    # BFS to find max depth
+    max_depth = 0
+    for root in roots:
+        visited = set()
+        queue = [(root, 1)]
+        while queue:
+            node, depth = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            max_depth = max(max_depth, depth)
+            for neighbor in adjacency.get(node, []):
+                if neighbor not in visited:
+                    queue.append((neighbor, depth + 1))
+
+    return {
+        "num_nodes": num_nodes,
+        "num_edges": num_edges,
+        "max_depth": max_depth,
+    }
+
+
+
 
 def mqtt_varlen_encoder(value):
     n = int.from_bytes(value, byteorder="big", signed=False) if value else 0
@@ -130,6 +197,7 @@ def mqtt_varlen_encoder(value):
     if len(out) > 4: raise ValueError("MQTT varint produced >4 bytes, which is invalid.")
     return bytes(out)
 
+# --- Packet Building Functions ---
 def build_mqtt_packet(name: str, control_header: Union[int, dict], variable_header_fields=None, payload_fields=None):
     variable_header_fields = variable_header_fields or []
     payload_fields = payload_fields or []
@@ -162,7 +230,7 @@ def build_mqtt_packet(name: str, control_header: Union[int, dict], variable_head
 
     return Request(name, children=(
         Block(name="FixedHeader", children=(
-            ch,
+            ch, # Control Header
             Block(name="RemainingLength", children=Size(name="RemainingLengthRaw", block_name="Body", fuzzable=False, length=4, endian=">"), encoder=mqtt_varlen_encoder, fuzzable=False)
         )),
         Block(name="Body", children=(
@@ -171,6 +239,7 @@ def build_mqtt_packet(name: str, control_header: Union[int, dict], variable_head
         ))
     ))
 
+# --- Connection Packet Definitions ---
 def build_connect_request():
     variable_header = [
         {"type": "string", "name": "ProtocolName", "value": "MQTT", "fuzzable": False},
@@ -216,6 +285,7 @@ def build_connect_with_lwt_request():
     ]
     return build_mqtt_packet("MQTT_CONNECT_LWT", 0x10, variable_header, payload)
 
+# --- Publish Packet Definitions for Each QoS Level ---
 def build_publish_request():
     variable_header = [
         {"type": "string", "name": "TopicName", "value": "fuzz/publish"},
@@ -255,6 +325,7 @@ def build_pubrel_request():
     ]
     return build_mqtt_packet("MQTT_PUBREL", 0x62, variable_header)
 
+# --- Subscription and Other Packets ---
 def build_subscribe_request():
     variable_header = [
         {"type": "word", "name": "PacketIdentifier", "value": 0},
@@ -285,6 +356,8 @@ def build_disconnect_request():
     ]
     return build_mqtt_packet("MQTT_DISCONNECT", 0xE0, variable_header)
 
+
+# Callbacks ------------------------------
 
 def conn_callback(target, fuzz_data_logger, session, test_case_context, *args, **kwargs):
     """Handle MQTT CONNACK after CONNECT using session.last_recv"""
@@ -334,10 +407,12 @@ def qos2_callback(target, fuzz_data_logger, session, test_case_context, *args, *
         if ctrl_type == 0x50:
             fuzz_data_logger.log_info(f"Received PUBREC: {resp.hex()}")
 
+            # Send PUBREL
             pubrel = b'\x62\x02\x00\x0C'
             target.send(pubrel)
             fuzz_data_logger.log_info(f"Sent PUBREL: {pubrel.hex()}")
 
+            # Wait for PUBCOMP via session.last_recv again
             resp2 = session.last_recv
             if resp2 and (resp2[0] & 0xF0) == 0x70:
                 fuzz_data_logger.log_info(f"Received PUBCOMP: {resp2.hex()}")
@@ -403,6 +478,13 @@ def ping_callback(target, fuzz_data_logger, session, test_case_context, *args, *
     except Exception as e:
         fuzz_data_logger.log_error(f"Error in ping_callback: {e}")
 
+# General TODOS:
+# - Look at AUTH
+# - Lighten the protocol graph
+# - Add mutation strategies
+
+# UTILS ------------------------------
+
 @click.group()
 def cli():
     pass
@@ -410,6 +492,7 @@ def cli():
 @click.command()
 @click.option('--host', help='Host or IP address of target', prompt=True)
 @click.option('--port', type=int, default=1883, help='Network port of target')
+@click.option('--max-iterations', type=int, default=DEFAULT_MAX_ITERATIONS, help='Maximum number of test case iterations')
 @click.option('--test-case-index', help='Test case index', type=str)
 @click.option('--test-case-name', help='Name of node or specific test case')
 @click.option('--csv-out', help='Output to CSV file')
@@ -423,15 +506,16 @@ def cli():
 @click.option('--file-dump/--no-file-dump', help='Enable/disable full dump of logs into a file', default=True)
 @click.option('--output-dir', type=str, help='Specify output directory', default="")
 @click.argument('target_cmdline', nargs=-1, type=click.UNPROCESSED)
-def fuzz(target_cmdline, host, port, test_case_index, test_case_name, csv_out, sleep_between_cases,
+def fuzz(target_cmdline, host, port, max_iterations, test_case_index, test_case_name, csv_out, sleep_between_cases,
          procmon_host, procmon_port, procmon_start, procmon_capture, tui, text_dump, file_dump, output_dir
     ):
 
 
     if output_dir == "":
-        MASTER_OUTDIR = f"./{OUTDIR}"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        MASTER_OUTDIR = f"./{OUTDIR}/{timestamp}/{host}_{port}"
     else:
-        MASTER_OUTDIR=f"{output_dir}/{OUTDIR}"
+        MASTER_OUTDIR = f"{output_dir}/boofuzz/{host}_{port}"
 
     os.makedirs(MASTER_OUTDIR, exist_ok=True)
     LOG_FILEPATH = f"{MASTER_OUTDIR}/fuzz.log"
@@ -470,23 +554,20 @@ def fuzz(target_cmdline, host, port, test_case_index, test_case_name, csv_out, s
         procmon = None
         monitors = []
 
-    start = None
-    end = None
+    start = 1
+    end = max_iterations if max_iterations > 0 else None
     fuzz_only_one_case = None
-    if test_case_index is None:
-        start = 1
-    elif "-" in test_case_index:
-        start, end = test_case_index.split("-")
-        if not start:
-            start = 1
+
+    if test_case_index is not None:
+        if "-" in test_case_index:
+            idx_start, idx_end = test_case_index.split("-")
+            start = int(idx_start) if idx_start else 1
+            if idx_end:
+                end = min(int(idx_end), start + max_iterations - 1) if max_iterations > 0 else int(idx_end)
+            else:
+                end = start + max_iterations - 1 if max_iterations > 0 else None
         else:
-            start = int(start)
-        if not end:
-            end = None
-        else:
-            end = int(end)
-    else:
-        fuzz_only_one_case = int(test_case_index)
+            fuzz_only_one_case = int(test_case_index)
 
     session = Session(
         target=Target(
@@ -498,7 +579,8 @@ def fuzz(target_cmdline, host, port, test_case_index, test_case_name, csv_out, s
         index_start=start,
         index_end=end,
         receive_data_after_fuzz=True,
-        db_filename=f"{MASTER_OUTDIR}/session.db"
+        db_filename=f"{MASTER_OUTDIR}/session.db",
+        web_port=None,
     )
 
     connect_req = build_connect_request()
@@ -543,36 +625,58 @@ def fuzz(target_cmdline, host, port, test_case_index, test_case_name, csv_out, s
     session.connect(connect_auth_req, disconnect_req, callback=conn_callback)
     session.connect(connect_lwt_req, disconnect_req, callback=conn_callback)
 
-    with open(f'./{MASTER_OUTDIR}/fsm.png', 'wb') as file:
+    # Get FSM stats before fuzzing
+    fsm_stats = get_fsm_stats(session)
+    fsm_path = f"{MASTER_OUTDIR}/fsm.png"
+
+    with open(fsm_path, 'wb') as file:
         file.write(session.render_graph_graphviz().create_png())
 
-    print(f"Logs will be saved to {LOG_FILEPATH}")
-
+    print(f"Logs will be saved to {LOG_FILEPATH}", file=sys.stderr)
 
     if fuzz_only_one_case is not None:
         session.fuzz_single_case(mutant_index=fuzz_only_one_case)
     else:
         session.fuzz()
 
+    # Extract findings from the session database and build RunResult
     db_path = f"{MASTER_OUTDIR}/session.db"
-    findings, db_logs = extract_findings_from_db(db_path, host, port)
+    findings, db_logs, db_stats = extract_findings_from_db(db_path, host, port)
 
     logs = [f"Fuzzing session completed for {host}:{port}"]
     logs.extend(db_logs)
     logs.append(f"Results saved to {MASTER_OUTDIR}")
 
-    if not findings:
-        findings.append(build_finding(
-            finding_id="FUZZ-COMPLETE",
-            success=False,
-            title="Fuzzing completed without crashes",
-            severity="info",
-            description="The fuzzing session completed without detecting any crashes or failures",
-            evidence={"output_dir": MASTER_OUTDIR, "db_path": db_path},
-            tags=["fuzzing", "mqtt"],
-            host=host,
-            port=port,
-        ))
+    # Build evidence for protocol robustness
+    robustness_evidence = {
+        "iterations_executed": db_stats["total_cases"],
+        "max_iterations_configured": max_iterations,
+        "crashes_detected": db_stats["failed_cases"],
+        "fsm_nodes": fsm_stats["num_nodes"],
+        "fsm_edges": fsm_stats["num_edges"],
+        "fsm_max_depth": fsm_stats["max_depth"],
+        "fsm_image_path": fsm_path,
+        "output_dir": MASTER_OUTDIR,
+    }
+
+    # Always add protocol robustness finding
+    has_crashes = db_stats["failed_cases"] > 0
+    if has_crashes:
+        robustness_desc = f"Executed {db_stats['total_cases']} fuzzing iterations against the MQTT parser. {db_stats['failed_cases']} crash(es) detected, indicating potential robustness issues."
+    else:
+        robustness_desc = f"Executed {db_stats['total_cases']} fuzzing iterations against the MQTT parser. No crashes were observed, indicating baseline robustness of the tested implementation."
+
+    findings.append(build_finding(
+        finding_id="mqtt-boofuzz-robustness",
+        success=not has_crashes,
+        title="MQTT Protocol Robustness Assessment",
+        severity="info" if not has_crashes else "high",
+        description=robustness_desc,
+        evidence=robustness_evidence,
+        tags=["fuzzing", "mqtt", "robustness", "protocol"],
+        host=host,
+        port=port,
+    ))
 
     result = build_run_result(host, port, findings, logs)
     print(json.dumps(result))

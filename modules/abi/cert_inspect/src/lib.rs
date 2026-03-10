@@ -11,6 +11,9 @@ use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/* ================================================================ */
+/* C ABI Structures Replicated in Rust                              */
+/* ================================================================ */
 #[repr(C)]
 pub struct KrakenHostPort {
     pub host: *const c_char,
@@ -56,6 +59,10 @@ pub struct KrakenRunResult {
     pub findings_count: usize,
     pub logs: KrakenStringList,
 }
+
+/* ================================================================ */
+/* ABI Version and Entry Points                                     */
+/* ================================================================ */
 
 #[no_mangle]
 pub static KRAKEN_MODULE_ABI_VERSION: u32 = 1;
@@ -312,6 +319,10 @@ pub extern "C" fn kraken_run(
     }
     0
 }
+
+/* ================================================================ */
+/* Helper Functions                                                 */
+/* ================================================================ */
 
 fn connect_and_get_cert(target: &str, host: &str, tls_insecure: bool) -> Result<X509, String> {
     let mut builder =

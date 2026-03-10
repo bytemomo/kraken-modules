@@ -18,6 +18,9 @@
 KRAKEN_API const uint32_t KRAKEN_MODULE_ABI_VERSION = KRAKEN_ABI_VERSION;
 static const char *LOG_PREFIX = "[mqtt-sys-disclosure] ";
 
+/* -------------------------------------------------------- */
+/* Minimal MQTT Helper                                      */
+/* -------------------------------------------------------- */
 
 typedef struct {
     uint8_t buf[512];
@@ -42,7 +45,7 @@ static int mqtt_build_connect(mqtt_packet_t *pkt, const char *client_id, const c
     if (wrote < 0)
         return -1;
     p += wrote;
-    *p++ = 4;
+    *p++ = 4; // Protocol level 3.1.1
     uint8_t flags = 0;
     if (user && *user)
         flags |= 0x80;
@@ -50,7 +53,7 @@ static int mqtt_build_connect(mqtt_packet_t *pkt, const char *client_id, const c
         flags |= 0x40;
     *p++ = flags;
     *p++ = 0;
-    *p++ = 60;
+    *p++ = 60; // Keepalive 60s
     wrote = mqtt_encode_string(p, client_id);
     if (wrote < 0)
         return -1;
@@ -71,7 +74,7 @@ static int mqtt_build_connect(mqtt_packet_t *pkt, const char *client_id, const c
     size_t rem_len = p - pkt->buf;
     uint8_t head[5];
     size_t hl = 1;
-    head[0] = 0x10;
+    head[0] = 0x10; // CONNECT
     size_t x = rem_len;
     do {
         uint8_t b = x % 128;
@@ -92,15 +95,15 @@ static int mqtt_build_subscribe(mqtt_packet_t *pkt, const char *topic) {
     uint8_t *p = pkt->buf;
     size_t topic_len = strlen(topic);
     size_t rem_len = 2 + 2 + topic_len + 1;
-    *p++ = 0x82;
-    *p++ = (uint8_t)rem_len;
+    *p++ = 0x82; // SUBSCRIBE
+    *p++ = (uint8_t)rem_len; // Fits for small topics
     *p++ = 0;
-    *p++ = 1;
+    *p++ = 1; // Packet ID
     int wrote = mqtt_encode_string(p, topic);
     if (wrote < 0)
         return -1;
     p += wrote;
-    *p++ = 0;
+    *p++ = 0; // QoS 0
     pkt->len = p - pkt->buf;
     return (int)pkt->len;
 }
@@ -108,7 +111,7 @@ static int mqtt_build_subscribe(mqtt_packet_t *pkt, const char *topic) {
 static int mqtt_build_publish(mqtt_packet_t *pkt, const char *topic, const char *msg) {
     pkt->len = 0;
     uint8_t *p = pkt->buf;
-    *p++ = 0x30;
+    *p++ = 0x30; // PUBLISH, QoS 0
     size_t topic_len = strlen(topic);
     size_t msg_len = strlen(msg);
     size_t rem_len = 2 + topic_len + msg_len;
@@ -137,6 +140,9 @@ static int mqtt_parse_suback(const uint8_t *buf, size_t n) {
     return n >= 3 && buf[0] == 0x90;
 }
 
+/* -------------------------------------------------------- */
+/* Networking helpers                                       */
+/* -------------------------------------------------------- */
 
 static uint32_t effective_timeout(uint32_t timeout_ms) {
     return timeout_ms ? timeout_ms : 5000;
@@ -173,7 +179,7 @@ static int finish_connect(int sock, int flags, uint32_t timeout_ms) {
     if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0 || err != 0)
         return -1;
 
-   
+    // Restore blocking mode
     fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
     return 0;
 }
@@ -271,7 +277,7 @@ static ssize_t mqtt_read_packet_with_timeout(int sock, uint8_t *buf, size_t buf_
     int wait_ms = (int)effective_timeout(timeout_ms);
     int pr = poll(&pfd, 1, wait_ms);
     if (pr == 0)
-        return 0;
+        return 0; // timeout
     if (pr < 0) {
         if (errno == EINTR)
             return 0;
@@ -280,6 +286,9 @@ static ssize_t mqtt_read_packet_with_timeout(int sock, uint8_t *buf, size_t buf_
     return mqtt_read_packet(sock, buf, buf_len);
 }
 
+/* -------------------------------------------------------- */
+/* MQTT operations over raw sockets                         */
+/* -------------------------------------------------------- */
 
 static int mqtt_client_connect(int *out_sock, const char *host, uint16_t port, const char *client_id, const char *user, const char *pass,
                                uint32_t timeout_ms) {
@@ -358,7 +367,7 @@ static bool mqtt_wait_for_sys_topic(int sock, const char *prefix, uint32_t wait_
         if (got == 0)
             continue;
         if ((packet[0] & 0xF0) != 0x30)
-            continue;
+            continue; // Not a PUBLISH
 
         size_t offset = 1;
         size_t multiplier = 1;
@@ -392,7 +401,7 @@ static bool mqtt_wait_for_sys_topic(int sock, const char *prefix, uint32_t wait_
                 size_t payload_len = 0;
                 if ((size_t)got > offset)
                     payload_len = (size_t)got - offset;
-                size_t max_bytes = (payload_buf_len - 1) / 2;
+                size_t max_bytes = (payload_buf_len - 1) / 2; // hex encoding
                 if (payload_len > max_bytes)
                     payload_len = max_bytes;
                 for (size_t i = 0; i < payload_len; i++) {
@@ -406,6 +415,9 @@ static bool mqtt_wait_for_sys_topic(int sock, const char *prefix, uint32_t wait_
     return false;
 }
 
+/* ------------------------------------------------------------------ */
+/* Module logic                                                       */
+/* ------------------------------------------------------------------ */
 
 KRAKEN_API int kraken_run(const char *host, uint32_t port, uint32_t timeout_ms, const char *params_json, KrakenRunResult **out_result) {
     srand((unsigned)time(NULL));
@@ -421,12 +433,9 @@ add_log(result, logbuf);
 
     char *username = json_extract_string(params_json, "username");
     char *password = json_extract_string(params_json, "password");
-    char *sys_prefix = json_extract_string(params_json, "sys_prefix");
-    if (!sys_prefix)
-        sys_prefix = mystrdup("$SYS/");
+    const char *sys_prefix = "$SYS";
 
-    int subscriber = -1;
-    int publisher = -1;
+    int sock = -1;
     bool leak_detected = false;
     char leaked_topic[256] = {0};
     char leaked_payload[512] = {0};
@@ -434,52 +443,38 @@ add_log(result, logbuf);
     uint32_t op_timeout = effective_timeout(timeout_ms);
 
     char client_id[48];
-    snprintf(client_id, sizeof(client_id), "krk-sub-%u", (unsigned)rand());
-    if (mqtt_client_connect(&subscriber, host, (uint16_t)port, client_id, username, password, op_timeout) != 0) {
-        snprintf(logbuf, sizeof(logbuf), "%sfailed to open subscriber connection", LOG_PREFIX);
-    add_log(result, logbuf);
-        goto finalize;
-    }
-    snprintf(logbuf, sizeof(logbuf), "%ssubscriber connected", LOG_PREFIX);
-    add_log(result, logbuf);
-
-    if (mqtt_client_subscribe(subscriber, "#", op_timeout) != 0) {
-        snprintf(logbuf, sizeof(logbuf), "%sfailed to subscribe to '#' topic", LOG_PREFIX);
+    snprintf(client_id, sizeof(client_id), "krk-sys-%u", (unsigned)rand());
+    if (mqtt_client_connect(&sock, host, (uint16_t)port, client_id, username, password, op_timeout) != 0) {
+        snprintf(logbuf, sizeof(logbuf), "%sfailed to connect", LOG_PREFIX);
         add_log(result, logbuf);
         goto finalize;
     }
-    snprintf(logbuf, sizeof(logbuf), "%ssubscriber registered to '#' topic", LOG_PREFIX);
+    snprintf(logbuf, sizeof(logbuf), "%sconnected", LOG_PREFIX);
     add_log(result, logbuf);
 
-    snprintf(client_id, sizeof(client_id), "krk-pub-%u", (unsigned)rand());
-    if (mqtt_client_connect(&publisher, host, (uint16_t)port, client_id, username, password, op_timeout) != 0) {
-        snprintf(logbuf, sizeof(logbuf), "%sfailed to open publisher connection", LOG_PREFIX);
-    add_log(result, logbuf);
+    char sys_topic[128];
+    snprintf(sys_topic, sizeof(sys_topic), "%s/#", sys_prefix);
+    if (mqtt_client_subscribe(sock, sys_topic, op_timeout) != 0) {
+        snprintf(logbuf, sizeof(logbuf), "%sfailed to subscribe to '%s'", LOG_PREFIX, sys_topic);
+        add_log(result, logbuf);
         goto finalize;
     }
-    snprintf(logbuf, sizeof(logbuf), "%spublisher connected", LOG_PREFIX);
+    snprintf(logbuf, sizeof(logbuf), "%ssubscribed to '%s'", LOG_PREFIX, sys_topic);
     add_log(result, logbuf);
 
-    char topic[128];
-    char payload[128];
-    snprintf(topic, sizeof(topic), "kraken/test/%u", (unsigned)rand());
-    snprintf(payload, sizeof(payload), "kraken_probe_%u", (unsigned)rand());
-
-    if (mqtt_client_publish(publisher, topic, payload, op_timeout) != 0) {
-        snprintf(logbuf, sizeof(logbuf), "%spublisher failed to send probe message", LOG_PREFIX);
-    add_log(result, logbuf);
-        goto finalize;
+    char probe_topic[128];
+    snprintf(probe_topic, sizeof(probe_topic), "kraken/probe/%u", (unsigned)rand());
+    if (mqtt_client_publish(sock, probe_topic, "1", op_timeout) != 0) {
+        snprintf(logbuf, sizeof(logbuf), "%sfailed to publish probe", LOG_PREFIX);
+        add_log(result, logbuf);
     }
-    snprintf(logbuf, sizeof(logbuf), "%sprobe message published", LOG_PREFIX);
-    add_log(result, logbuf);
 
     uint32_t wait_window = op_timeout * 2;
     if (wait_window > 15000)
         wait_window = 15000;
-    leak_detected = mqtt_wait_for_sys_topic(subscriber, sys_prefix, wait_window, leaked_topic, sizeof(leaked_topic), leaked_payload, sizeof(leaked_payload));
+    leak_detected = mqtt_wait_for_sys_topic(sock, sys_prefix, wait_window, leaked_topic, sizeof(leaked_topic), leaked_payload, sizeof(leaked_payload));
     if (leak_detected) {
-        char logbuf[256];
-        snprintf(logbuf, sizeof(logbuf), "%sreceived $SYS topic via '#': %s", LOG_PREFIX, leaked_topic);
+        snprintf(logbuf, sizeof(logbuf), "%sreceived $SYS topic: %s", LOG_PREFIX, leaked_topic);
         add_log(result, logbuf);
         if (leaked_payload[0] != '\0') {
             char paybuf[300];
@@ -487,15 +482,13 @@ add_log(result, logbuf);
             add_log(result, paybuf);
         }
     } else {
-        snprintf(logbuf, sizeof(logbuf), "%sno $SYS topic observed via '#' subscription", LOG_PREFIX);
+        snprintf(logbuf, sizeof(logbuf), "%sno $SYS topic received within %ums", LOG_PREFIX, wait_window);
         add_log(result, logbuf);
     }
 
 finalize:
-    if (subscriber >= 0)
-        close(subscriber);
-    if (publisher >= 0)
-        close(publisher);
+    if (sock >= 0)
+        close(sock);
 
     KrakenFinding finding = {0};
     finding.id = mystrdup("mqtt-sys-disclosure");
@@ -503,7 +496,7 @@ finalize:
     finding.success = leak_detected;
     finding.title = mystrdup("MQTT $SYS topic disclosure");
     finding.severity = mystrdup(leak_detected ? "high" : "info");
-    finding.description = mystrdup(leak_detected ? "Broker forwards $SYS topics to '#' subscribers" : "Broker filters $SYS topics from '#' subscribers");
+    finding.description = mystrdup(leak_detected ? "Broker exposes $SYS system topics to clients" : "$SYS system topics not accessible");
     finding.timestamp = time(NULL);
     finding.target.host = mystrdup(host);
     finding.target.port = (uint16_t)port;
@@ -532,12 +525,14 @@ finalize:
 
     free(username);
     free(password);
-    free(sys_prefix);
 
     *out_result = result;
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* Memory Deallocator                                                 */
+/* ------------------------------------------------------------------ */
 
 KRAKEN_API void kraken_free(void *p) {
     if (!p)
