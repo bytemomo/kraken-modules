@@ -1,5 +1,5 @@
 id: mqtt_auth_check
-version: 0.2.0
+version: 0.1.0
 type: abi
 description: |
   Checks MQTT authentication posture. Verifies anonymous CONNECT acceptance,

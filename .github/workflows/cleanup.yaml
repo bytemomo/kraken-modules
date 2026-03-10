@@ -1,0 +1,32 @@
+name: Cleanup All Releases and Tags
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Delete all releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName -q '.[].tagName' | while read -r TAG; do
+            echo "Deleting release ${TAG}..."
+            gh release delete "$TAG" --yes
+          done
+
+      - name: Delete all remote tags
+        run: |
+          git tag -l | while read -r TAG; do
+            echo "Deleting tag ${TAG}..."
+            git push origin --delete "$TAG"
+          done
+          echo "All releases and tags deleted."
