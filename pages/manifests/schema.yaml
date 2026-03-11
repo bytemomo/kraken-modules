@@ -5,9 +5,31 @@ required:
   - id
   - version
   - type
+  - description
   - build
   - runtime
+  - params
   - findings
+
+allOf:
+  - if:
+      properties:
+        type:
+          const: abi
+    then:
+      required: [abi]
+  - if:
+      properties:
+        type:
+          const: container
+    then:
+      required: [container]
+  - if:
+      properties:
+        type:
+          const: grpc
+    then:
+      required: [grpc]
 
 properties:
   id:
@@ -45,6 +67,7 @@ properties:
   abi:
     type: object
     description: Required for type=abi
+    required: [api, symbol]
     properties:
       api:
         type: string
@@ -63,6 +86,7 @@ properties:
   grpc:
     type: object
     description: Required for type=grpc
+    required: [service, default_port]
     properties:
       service:
         type: string
@@ -87,16 +111,74 @@ properties:
 
   params:
     type: object
-    description: JSON Schema for module parameters
+    description: JSON Schema for module parameters (validated as Draft-7)
+    required: [type, properties]
     properties:
       type:
         const: object
-      properties:
-        type: object
       required:
         type: array
         items:
           type: string
+      properties:
+        type: object
+        additionalProperties:
+          type: object
+          required: [type, description]
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+              enum: [string, integer, number, boolean, array]
+            description:
+              type: string
+              minLength: 1
+            enum:
+              type: array
+              minItems: 1
+              description: Allowed values (exhaustive list)
+            examples:
+              type: array
+              minItems: 1
+              description: Example values for documentation
+            minimum:
+              type: number
+              description: Minimum value (integer/number types)
+            maximum:
+              type: number
+              description: Maximum value (integer/number types)
+            exclusiveMinimum:
+              type: number
+            exclusiveMaximum:
+              type: number
+            minLength:
+              type: integer
+              minimum: 0
+              description: Minimum string length
+            maxLength:
+              type: integer
+              minimum: 0
+              description: Maximum string length
+            pattern:
+              type: string
+              description: Regex pattern the string must match
+            format:
+              type: string
+              enum:
+                - ipv4
+                - ipv6
+                - hostname
+                - uri
+                - file-path
+                - duration
+                - hex
+              description: Semantic format hint for validation
+            items:
+              type: object
+              description: Schema for array element type
+              properties:
+                type:
+                  type: string
 
   findings:
     type: array

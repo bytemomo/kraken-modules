@@ -18,6 +18,37 @@ runtime:
   timeout: 30s
   memory: 64m
 
+params:
+  type: object
+  properties:
+    tls_insecure:
+      type: boolean
+      description: Skip TLS certificate verification during connection
+    warn_days:
+      type: integer
+      description: Days before expiry to trigger CERT-EXPIRING finding
+      minimum: 1
+      maximum: 365
+    min_rsa_bits:
+      type: integer
+      description: Minimum RSA key size in bits
+      enum: [1024, 2048, 3072, 4096]
+    allow_sha1:
+      type: boolean
+      description: Suppress CERT-SHA1 finding for SHA-1 signatures
+    disallow_self_signed:
+      type: boolean
+      description: Report self-signed certificates as findings
+    match_hostname:
+      type: boolean
+      description: Check certificate CN/SAN against target hostname
+    require_san:
+      type: boolean
+      description: Require Subject Alternative Name extension
+    require_server_auth:
+      type: boolean
+      description: Require Server Authentication EKU extension
+
 findings:
   - id: CERT-EXPIRED
     severity: critical

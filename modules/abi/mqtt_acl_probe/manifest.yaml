@@ -20,14 +20,22 @@ runtime:
 
 params:
   type: object
+  required:
+    - topic
   properties:
     topic:
       type: string
-      description: Topic to probe
-    username:
+      description: MQTT topic to probe for subscribe/publish access
+      examples: ["test/acl/probe"]
+    creds_file:
       type: string
-    password:
-      type: string
+      description: Path to credential file (user:pass per line) for multi-credential probing
+      format: file-path
+    timeout_ms:
+      type: integer
+      description: Per-operation timeout in milliseconds
+      minimum: 100
+      maximum: 60000
 
 findings:
   - id: MQTT-ACL-SUB

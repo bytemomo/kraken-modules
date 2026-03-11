@@ -18,6 +18,29 @@ runtime:
   timeout: 60s
   memory: 64m
 
+params:
+  type: object
+  required:
+    - sequence_num
+  properties:
+    sequence_num:
+      type: integer
+      description: Number of replay sequences to execute
+      minimum: 1
+      examples: [3]
+    path0:
+      type: string
+      description: File path for replay sequence 0 (hex-encoded packets)
+      format: file-path
+    path1:
+      type: string
+      description: File path for replay sequence 1
+      format: file-path
+    path2:
+      type: string
+      description: File path for replay sequence 2
+      format: file-path
+
 findings:
   - id: MQTT-REPLAY
     severity: high

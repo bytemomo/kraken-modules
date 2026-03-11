@@ -33,14 +33,72 @@ def validate_manifest(manifest_path: Path, schema: dict) -> list[str]:
         if manifest["id"] != dir_name:
             errors.append(f"Manifest id '{manifest['id']}' does not match directory name '{dir_name}'")
 
-    # Check type-specific requirements
-    module_type = manifest.get("type")
-    if module_type == "abi" and "abi" not in manifest:
-        errors.append("Type 'abi' requires 'abi' section")
-    if module_type == "container" and "container" not in manifest:
-        errors.append("Type 'container' requires 'container' section")
-    if module_type == "grpc" and "grpc" not in manifest:
-        errors.append("Type 'grpc' requires 'grpc' section")
+    # Validate params section consistency
+    params = manifest.get("params")
+    if params and isinstance(params, dict):
+        errors.extend(_validate_params(params))
+
+    return errors
+
+
+VALID_PARAM_TYPES = {"string", "integer", "number", "boolean", "array"}
+VALID_FORMATS = {"ipv4", "ipv6", "hostname", "uri", "file-path", "duration", "hex"}
+
+
+def _validate_params(params: dict) -> list[str]:
+    errors = []
+    properties = params.get("properties", {})
+    required = params.get("required", [])
+
+    for name in required:
+        if name not in properties:
+            errors.append(
+                f"params.required lists '{name}' but it is not in params.properties"
+            )
+
+    for name, prop in properties.items():
+        prefix = f"params.properties.{name}"
+
+        if not isinstance(prop, dict):
+            errors.append(f"{prefix}: must be an object")
+            continue
+
+        if "type" not in prop:
+            errors.append(f"{prefix}: missing required field 'type'")
+        elif prop["type"] not in VALID_PARAM_TYPES:
+            errors.append(
+                f"{prefix}: invalid type '{prop['type']}', "
+                f"must be one of {sorted(VALID_PARAM_TYPES)}"
+            )
+
+        if "description" not in prop:
+            errors.append(f"{prefix}: missing required field 'description'")
+
+        ptype = prop.get("type")
+        if ptype == "string":
+            for num_field in ("minimum", "maximum"):
+                if num_field in prop:
+                    errors.append(
+                        f"{prefix}: '{num_field}' is not valid for type 'string'"
+                    )
+        elif ptype in ("integer", "number"):
+            for str_field in ("minLength", "maxLength", "pattern", "format"):
+                if str_field in prop:
+                    errors.append(
+                        f"{prefix}: '{str_field}' is not valid for type '{ptype}'"
+                    )
+
+        if "format" in prop and prop["format"] not in VALID_FORMATS:
+            errors.append(
+                f"{prefix}: invalid format '{prop['format']}', "
+                f"must be one of {sorted(VALID_FORMATS)}"
+            )
+
+        if "default" in prop:
+            errors.append(
+                f"{prefix}: 'default' is not allowed "
+                "(consumers must provide all parameters explicitly)"
+            )
 
     return errors
 

@@ -16,6 +16,10 @@ runtime:
   timeout: 60s
   memory: 64m
 
+params:
+  type: object
+  properties: {}
+
 findings:
   - id: ECAT-INJECTION
     severity: medium

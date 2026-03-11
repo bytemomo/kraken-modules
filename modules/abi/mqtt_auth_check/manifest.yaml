@@ -21,12 +21,11 @@ runtime:
 params:
   type: object
   properties:
-    wordlist:
+    creds_file:
       type: string
-      description: Path to credential wordlist
-    timeout_ms:
-      type: integer
-      default: 5000
+      description: Path to credential file (user:pass per line) for brute-force testing
+      format: file-path
+      examples: ["/data/mqtt_creds.txt"]
 
 findings:
   - id: MQTT-ANON
