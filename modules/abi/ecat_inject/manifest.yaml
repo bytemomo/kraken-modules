@@ -1,5 +1,5 @@
 id: ecat_inject
-version: 0.1.1
+version: 0.1.2
 type: abi
 description: EtherCAT frame injection testing
 
