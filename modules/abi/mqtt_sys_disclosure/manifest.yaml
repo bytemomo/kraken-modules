@@ -18,6 +18,20 @@ runtime:
   timeout: 30s
   memory: 64m
 
+params:
+  type: object
+  properties:
+    username:
+      type: string
+      description: MQTT username for authenticated connection
+    password:
+      type: string
+      description: MQTT password for authenticated connection
+    sys_prefix:
+      type: string
+      description: Custom $SYS topic prefix to check for disclosure
+      examples: ["$SYS", "$SYS/#"]
+
 findings:
   - id: MQTT-SYS-DISCLOSURE
     severity: high
