@@ -1,5 +1,5 @@
 id: tls_version_check
-version: 0.1.1
+version: 0.1.2
 type: abi
 description: |
   Summarizes which TLS protocol versions a server accepts by attempting handshakes
@@ -17,6 +17,25 @@ runtime:
   protocol: tls
   timeout: 30s
   memory: 64m
+
+params:
+  type: object
+  properties:
+    min_version:
+      type: string
+      description: Minimum TLS version to test (skip versions below this)
+      enum: ["1.0", "1.1", "1.2", "1.3"]
+      examples: ["1.2"]
+    max_version:
+      type: string
+      description: Maximum TLS version to test (skip versions above this)
+      enum: ["1.0", "1.1", "1.2", "1.3"]
+      examples: ["1.3"]
+    sni:
+      type: string
+      description: Override SNI hostname sent in TLS ClientHello
+      format: hostname
+      examples: ["broker.example.com"]
 
 findings:
   - id: TLS-SUPPORT-OVERVIEW

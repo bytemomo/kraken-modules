@@ -1,5 +1,5 @@
 id: mqtt_replay
-version: 0.1.1
+version: 0.1.2
 type: abi
 description: |
   Replays fixed MQTT packet sequences to reproduce known bugs. Takes a hex-encoded
@@ -17,6 +17,29 @@ runtime:
   protocol: mqtt
   timeout: 60s
   memory: 64m
+
+params:
+  type: object
+  required:
+    - sequence_num
+  properties:
+    sequence_num:
+      type: integer
+      description: Number of replay sequences to execute
+      minimum: 1
+      examples: [3]
+    path0:
+      type: string
+      description: File path for replay sequence 0 (hex-encoded packets)
+      format: file-path
+    path1:
+      type: string
+      description: File path for replay sequence 1
+      format: file-path
+    path2:
+      type: string
+      description: File path for replay sequence 2
+      format: file-path
 
 findings:
   - id: MQTT-REPLAY

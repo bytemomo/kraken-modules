@@ -1,5 +1,5 @@
 id: mqtt_boofuzz
-version: 0.1.1
+version: 0.1.2
 type: container
 description: |
   MQTT protocol fuzzer using boofuzz. Tests CONNECT, PUBLISH, SUBSCRIBE,
@@ -19,19 +19,52 @@ runtime:
 
 params:
   type: object
+  required:
+    - host
+    - port
   properties:
     host:
       type: string
-      description: Target MQTT broker host
+      description: Target MQTT broker host or IP address
+      format: hostname
+      examples: ["192.168.1.10", "broker.local"]
     port:
       type: integer
-      default: 1883
       description: Target MQTT broker port
+      minimum: 1
+      maximum: 65535
+    max_iterations:
+        type: integer
+        description: Number of iterations to run
+        minimum: 1
     test_case_index:
       type: string
-      description: Specific test case index or range (e.g., "1-100")
-  required:
-    - host
+      description: Test case index or range to fuzz
+      pattern: "^[0-9]+(-[0-9]+)?$"
+      examples: ["1-100", "42"]
+    test_case_name:
+      type: string
+      description: Name of specific node or test case to fuzz
+    sleep_between_cases:
+      type: number
+      description: Wait time in seconds between test cases
+      minimum: 0
+    procmon_host:
+      type: string
+      description: Process monitor host or IP for crash detection
+      format: hostname
+    procmon_port:
+      type: integer
+      description: Process monitor port
+      minimum: 1
+      maximum: 65535
+    procmon_start:
+      type: string
+      description: Command to start the target process via process monitor
+    output_dir:
+      type: string
+      description: Directory for fuzzing output (session DB, logs, FSM graph)
+      format: file-path
 
 findings:
   - id: FUZZ-FAIL
